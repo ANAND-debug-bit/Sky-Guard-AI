@@ -1,518 +1,227 @@
-# SkyGuard AI — Full Hackathon Execution Plan
+# Weather Anomaly Detection — Project Plan
 
-**Project:** Intelligent Real-Time Anomaly Detection for AWS (Temperature, Pressure, Humidity)
-**Hackathon sprint:** 24–48 hours | **Audience:** Beginners
-
----
-
-## 1. Market Research
-
-### 1.1 Existing Solutions
-
-| Solution | What it does | Limitation |
-|----------|--------------|------------|
-| IMD AWS QC System (India) | Range checks, step checks, temporal/spatial consistency at Pune central servers | Rule-based; evolving; no guaranteed error-free data; limited sensor-specific ML |
-| WMO / Nordic QC Standards | Standardized gross error, step, internal consistency checks | Static thresholds; struggles with complex multivariate faults |
-| Met Éireann LSTM Autoencoder | Learns normal patterns; 99.6% accuracy on valid data | Research-stage; single-variable focus; not widely deployed in India |
-| Commercial AWS (Vaisala, Campbell Scientific) | Hardware QC, calibration alerts | Vendor-locked; expensive; weak cross-station intelligence |
-| China CMA XGBoost QC | Multi-source rainfall anomaly detection | Heavy rainfall focus; needs radar/satellite; not T/P/H only |
-| LSTM-AE Flatline Detection (2024 research) | Detects stuck/frozen sensors | Narrow use case; not integrated with operational IMD systems |
-
-**Bottom line:** Most production systems still rely on threshold + rule-based QC. ML approaches exist in papers but are not operational at national scale in India, especially with explainability and real-time deployment.
+A multi-layer pipeline that flags anomalies in weather station sensor data by combining **physics sanity checks**, **ML-based anomaly detection**, **sensor-fault pattern detection**, **forecasting**, and **spatial cross-validation** — before fusing everything into a final confidence verdict.
 
 ---
 
-### 1.2 Gaps & Unmet Needs
+## Data Pipeline
 
-1. **Real-time intelligent QC** — IMD monitors 24/7 but relies on manual maintenance cycles (3-day SLA for fixes); anomalies like Delhi's 52.9°C faulty reading (May 2024) reached public platforms before correction.
-2. **Multivariate consistency** — Temperature, pressure, and humidity are physically coupled; most QC treats them independently.
-3. **Explainability gap** — Forecasters need to know why a flag was raised (sensor fault vs. heatwave).
-4. **Flatline / frozen sensor detection** — Rule-based methods miss subtle stuck values.
-5. **Predictive maintenance** — No widespread "sensor health score" before total failure.
-6. **Edge deployment** — Rural AWS sites have power/GSM issues; cloud-only ML is impractical.
-7. **Scalability across 700+ IMD AWS stations** — Climatology missing for many stations (IMD's own QC docs note this).
+```
+Open-Meteo API (ERA5, Indian stations)
+        +
+   Anomaly Injection
+        ↓
+    Time Series DB
+        ↓
+Replay past data to simulate the model
+```
 
----
-
-### 1.3 Target Audience & Pain Points
-
-| Audience | Pain Point | SkyGuard Value |
-|----------|------------|----------------|
-| IMD / State Met Centres | Bad data leads to bad forecasts; manual QC overload | Automated flags + confidence scores |
-| Farmers / Agri-tech (127 agro-AWS in India) | Wrong temp/humidity leads to crop loss decisions | Trustworthy corrected streams |
-| Aviation / Disaster Mgmt | Extreme readings trigger false alerts | Distinguish real events vs. sensor faults |
-| Climate Researchers | Archival data polluted by undetected anomalies | Clean datasets with QC metadata |
-| AWS Maintenance Teams | Reactive, site visits after failure | Predictive sensor health dashboard |
-
-**India-specific context:**
-- ~707 AWS + 1,351 ARG stations in IMD network (as of training docs)
-- Data received at Pune central servers via INSAT/GPRS
-- Preventive maintenance is manual; sensor replacement only after drift detected
-- 2024 Delhi incident proved public trust risk from unverified AWS readings
+- Historical weather data is pulled from the **Open-Meteo API** (ERA5 reanalysis, Indian stations).
+- Synthetic anomalies are injected into the clean data so the pipeline can be tested against known ground truth.
+- Data is stored in a time-series DB and **replayed** to simulate how the model would behave in real time.
 
 ---
 
-### 1.4 Trends, Technologies & Stats
+## Layer 1 — Physics Sanity Checks
 
-| Trend | Relevance |
-|-------|-------------|
-| LSTM Autoencoders for QC | State-of-art for temporal anomaly detection (Met Éireann, Indonesia BMKG studies) |
-| Explainable AI (SHAP/LIME) | 10% of your hackathon score — judges want interpretability |
-| Edge AI (ESP32) | 5% energy efficiency score; deploy QC at station level |
-| Robust statistics (MAD, double-standardization) | 2025 research for correlated multivariate meteorological data |
-| Digital Twin / Self-healing networks | Grand Challenge alignment — auto-correct + alert maintenance |
-| Global weather data market | ~$2.5B+ and growing; India investing under Ministry of Earth Sciences |
+### 1) Temperature ↔ Pressure
 
-**Key stat for your pitch:** IMD's own QC improved accuracy to ~95% after rule-based checks — meaning ~5% of data can still be problematic. AI can target that long tail.
+Barometric formula relating pressure and altitude/temperature:
 
----
+```
+P_h = P_0 · e^(−Mgh / RT)
+```
 
-## 2. Execution Plan (24–48 Hour Sprint)
+A more practical, station-usable version — reducing station pressure to Mean Sea Level (MSL) pressure:
 
-### Phase 0: Pre-Hackathon Prep (Do BEFORE the clock starts)
+```
+P_MSL = P_station · (1 − 0.0065h / (T + 0.0065h + 273.15))^(−5.257)
+```
 
-- Download IMD open data or use NOAA/NCEI AWS datasets
-- Pre-build a synthetic anomaly injector (spikes, flatlines, drift, comm gaps)
-- Set up GitHub repo, Docker, and a one-page architecture diagram
-- Assign roles (see Section 2.3)
-- Prepare 3 demo scenarios (including the 55°C example from the problem statement)
+- If the reported pressure is inconsistent with what's expected from `P_MSL`, it's flagged as the **final plausible range check** for station pressure.
 
----
+### 2) Temperature ↔ Humidity (Dew Point)
 
-### 2.1 48-Hour Roadmap
+Uses the **Magnus formula**:
 
-**Hours 0–4: Ideation**
-- Problem framing & scope lock (2h)
-- Dataset finalization (2h)
+```
+γ(T, RH) = ln(RH / 100) + (a·T) / (b + T)
 
-**Hours 4–8: Design**
-- Architecture & API design (2h)
-- UI wireframes (2h)
+T_dew = (b · γ(T, RH)) / (a − γ(T, RH))
+```
 
-**Hours 8–21: ML Core**
-- Data preprocessing pipeline (4h)
-- Baseline rules + Isolation Forest (3h)
-- LSTM-AE or multivariate model (6h)
-- SHAP explainability layer (3h)
+Where:
+- `a = 17.625`, `b = 243.04°C` (Alduchov–Eskridge constants)
+- Valid for `T ∈ [−40°C, 50°C]`
 
-**Hours 20–28: Backend & Frontend**
-- FastAPI/Node API + WebSocket (4h)
-- Dashboard (Plotly/Chart.js) (4h)
+**Hard physical constraint:**
 
-**Hours 28–35: Integration**
-- End-to-end pipeline (4h)
-- Demo scenarios + injected faults (3h)
+```
+T_dew ≤ T_air   (always true)
+```
 
-**Hours 36–48: Polish**
-- Pitch deck + README (4h)
-- Testing on eval dataset (4h)
-- Rehearsal + backup video (4h)
+- Since RH = (actual water vapour ÷ max water vapour air can hold) × 100%, if `T_dew > T_air` that implies `RH > 100%`, which is physically **impossible** → flagged as a **humidity sensor fault**.
+- **Depression check:** `(T_air − T_dew)` being extremely low (with reported low humidity) *or* extremely high (with reported high humidity) are **both suspicious signals**.
 
 ---
 
-### 2.2 24-Hour Compressed Roadmap
+## Layer 2 — ML Anomaly Detection
 
-| Hours | Milestone | Deliverable |
-|-------|-----------|-------------|
-| 0–2 | Ideation | Scope doc, 3 anomaly types prioritized |
-| 2–6 | Data + Baseline | Clean pipeline, rule-based QC, synthetic anomalies |
-| 6–12 | ML Core | Isolation Forest + simple LSTM-AE OR multivariate statistical model |
-| 12–16 | API + Dashboard | Live stream simulation, alert cards |
-| 16–20 | Explainability | SHAP feature importance + root-cause labels |
-| 20–22 | Demo prep | 3 scripted scenarios, metrics table |
-| 22–24 | Pitch + buffer | Slides, 3-min demo video backup |
+### 1) Isolation Forest + SHAP
 
----
+**Why Isolation Forest:** it's fast, unsupervised, needs no pre-training on "normal" data, and isolates anomalies as it requires no labeled anomaly data upfront.
 
-### 2.3 Team Roles (4–5 members ideal)
+**Idea:** Given `n` instances of a feature, recursively take a random split of a random feature range, dividing instances at each split — repeating until every instance is isolated (i.e., all circles reduced to a leaf of 1). Since splits are random, anomalies (rare/sparse values) tend to get isolated in far fewer splits than densely-packed normal values.
 
-| Role | Owner | Responsibilities |
-|------|-------|------------------|
-| Team Lead / Pitcher | 1 person | Story, slides, demo script, judge Q&A |
-| ML Engineer | 1 person | Model training, anomaly injection, metrics |
-| Backend Engineer | 1 person | API, WebSocket stream, database |
-| Frontend Engineer | 1 person | Dashboard, maps, alert UI |
-| Data + QA | 1 person | Dataset, preprocessing, test cases, README |
+**Problem with plain path length:** it's possible for a split to randomly separate a normal instance quickly by chance. So instead of relying on a single tree, a **collection of trees** is built and the **average path length** is computed across all of them.
 
-**Solo/duo hackathon?** Lead = ML + pitch; Partner = full-stack + dashboard.
+**Anomaly score formula:**
 
----
+```
+s(x, n) = 2^(−E(h(x)) / c(n))
+```
 
-## 3. Minimum Viable Product (MVP)
+Where:
+- `h(x)` = path length of instance `x`
+- `E(h(x))` = average path length across all isolation trees
+- `c(n)` = normalization value based on sample size `n`
 
-### MVP Definition (Must-Have for Demo)
+### 2) SHAP (SHapley Additive exPlanations)
 
-INPUT: T (°C) + P (hPa) + RH (%) time series (CSV upload OR simulated live stream)
+**Purpose:** explains *exactly why* a value was predicted/flagged as anomalous, by attributing the model's decision to individual features.
 
-CORE:
-1. Rule-based pre-filter (range/step)
-2. ML anomaly detector (Isolation Forest/LSTM)
-3. Multivariate consistency check
-4. Root-cause classifier (4–5 categories)
+**Shapley value formula:**
 
-OUTPUT:
-- Real-time alert feed
-- Severity (Low/Med/High/Critical)
-- Confidence score (0–100%)
-- SHAP-based explanation (top 2 features)
-- Sensor health score per station
-- Dashboard with time-series + flags
+```
+φᵢ = Σ_{S⊆F\{i}} [ |S|! (|F|−|S|−1)! / |F|! ] · [f(S∪{i}) − f(S)]
+```
 
-### MVP Feature Checklist (mapped to scoring)
+Where:
+- `F` = full set of features
+- `S` = subsets of features not including feature `i`
+- `f(S)` = model output using only features in `S`
+- `f(S∪{i})` = model output using `S` plus feature `i`
+- `φᵢ` = Shapley value / SHAP score for feature `i`
 
-| Feature | Hackathon Weight | MVP Priority |
-|---------|------------------|--------------|
-| Anomaly detection accuracy | 20% | P0 |
-| Innovation (multivariate + explainability) | 25% | P0 |
-| Real-time stream simulation | 15% | P0 |
-| SHAP/LIME explanations | 10% | P0 |
-| Multi-station scalability (architecture) | 10% | P1 |
-| Deployability (Docker/README) | 10% | P1 |
-| Dashboard UI | 5% | P1 |
-| Edge AI demo (ESP32 mock) | 5% | P2 (stretch) |
-| Data imputation | Optional | P2 (stretch) |
+This yields a weight-based, linear model giving a ratio contribution `(-2 → +2)` for each feature — telling us how much each feature (e.g. odour, taste, colour) contributed to the anomaly score for a given instance.
 
-### What to CUT if time runs out
-- Deep learning → use Isolation Forest + rules
-- ESP32 edge → show architecture slide only
-- Imputation → show formula on slide, skip code
-- Multi-station map → 2 stations is enough
+### 3) Time Series Decomposition + Rate of Change
+
+Classical decomposition:
+
+```
+Y = Y_trend + Y_seasonal + Y_residual
+```
+
+- **Trend:** helps rule out that there are two available extremes `X₁, X₂` of temp `(T₁, T₂)` at Jan & Jun both reading, say, 8°C. Given the theoretical seasonal averages (`T_Jan ≈ 8°C`, `T_Jun ≈ 34°C`), the residual is computed for each: `T_residual(Jan) ≈ 0` vs `T_residual(Jun) ≈ 26°C` — a high residual = high error compared to seasonal expectation. This incorporates seasonal/time-aware context into the anomaly check, instead of flagging raw values in isolation.
+- **Rate of change:**
+  - **Temperature:** a change of `5–8°C` in `10 min` is a rare condition; normal variation is `< 1°C` in that window.
+  - **Pressure:** a drop of `≥ 3 hPa/hr` is a severe weather alert (cyclone-like) — **not a fault**, but still worth flagging as an alert (not a sensor error).
+- **Trend detection method:** the **Mann-Kendall trend test** is used to check for gradual upward/downward drift — it classifies each pair `(i, j)` where the later value is larger than the previous one; if there's a gradual increase (day-over-day), later values will skew consistently higher than the theoretical/expected change.
 
 ---
 
-## 4. Unique Selling Proposition (USP)
+## Layer 3 — Frozen Sensor Detection
 
-### Core USP Statement
+If a sensor gets physically stuck/frozen, its readings stay (near) constant over time, which is itself anomalous for a live physical quantity.
 
-"SkyGuard AI is a self-aware weather data guardian that tells you not just THAT something is wrong, but WHY — distinguishing a Delhi heatwave from a broken thermistor in real time."
+```
+d²x/dt² ≈ 0   or   d²y/dt² ≈ 0   ...
+```
 
-### Differentiators
-
-| # | USP | Why it wins |
-|---|-----|-------------|
-| 1 | Physics-Informed Multivariate QC | Uses known T–P–RH relationships (e.g., dew point consistency) before ML — reduces false alarms on real weather events |
-| 2 | Explainable Root-Cause Taxonomy | Labels: SPIKE, FLATLINE, DRIFT, COMM_ERROR, PHYSICS_VIOLATION — not just a red dot |
-| 3 | Neighbor-Aware Spatial Check | Compares station vs. 3 nearest AWS (simulated) — directly addresses the 55°C use case |
-| 4 | Sensor Health Score (0–100) | Predictive maintenance dashboard — aligns with Grand Challenge "self-healing network" |
-| 5 | Hybrid Edge-Cloud Architecture | Rules on ESP32 (low power) + ML in cloud — hits Energy Efficiency criterion |
-| 6 | Confidence-Calibrated Alerts | Every alert shows % confidence + SHAP top features — builds forecaster trust |
-
-### One-liner for judges
-
-"Traditional QC asks: 'Is this value in range?' SkyGuard asks: 'Does this value make physical and spatial sense right now?'"
+- All readings being practically constant/unchanged (second derivative ≈ 0) across the board → flagged as a **stuck/frozen sensor alert**.
 
 ---
 
-## 5. Three Execution Perspectives (Tech Stacks)
+## Layer 4 — Forecasting (Chronos-2)
 
-### Option 1: Beginner-Friendly Full Stack (Recommended for first hackathon)
+Uses **Chronos-2** (pretrained time-series forecasting model) to predict the **next reading** from the recent feature history.
 
-Best for: Teams comfortable with web dev, limited ML depth
+**Core idea:**
 
-Frontend: HTML + CSS + JavaScript + Chart.js/Plotly.js
-Backend: Node.js + Express + Socket.io (real-time)
-Database: MongoDB (alerts, station metadata)
-ML: Python microservice (Flask/FastAPI)
-  - Pandas, NumPy, Scikit-learn
-  - Isolation Forest + Z-score rules
-  - SHAP for explainability
-Data: CSV upload + WebSocket simulated stream
-Deploy: Render/Railway + Docker
+```
+error = | predicted_reading − actual_reading |
+```
 
-Pros: Fast to build, easy demo, judges see live dashboard
-Cons: Less "deep learning" novelty — compensate with strong explainability + spatial logic
+- Chronos-2 forecasts what the next sensor reading *should* be, given the trend/pattern in recent readings.
+- The **absolute error** between the predicted value and the actual incoming reading is computed.
+- If this error is small → reading is consistent with the model's expectation → normal.
+- If this error is large → the actual reading deviates significantly from what was forecasted → flagged as a possible **anomaly**.
 
-48h build order:
-1. Python anomaly script (standalone)
-2. Node API wrapping Python via child_process or REST
-3. JS dashboard with live charts
-4. Inject 3 anomaly scenarios
+**Open question — threshold:** the exact error threshold isn't finalized yet, since **volatility differs by variable** (pressure, temperature, and humidity all fluctuate at different natural rates/scales) — so the threshold will likely need to be set/tuned **per-variable** rather than as one fixed global cutoff.
 
 ---
 
-### Option 2: ML-Heavy Python Stack (Best for accuracy score)
+## Layer 5 — Spatial Consistency
 
-Best for: Teams with ML/Python strength
+Incorporates overall regional weather change context instead of judging a single station in isolation.
 
-Frontend: Streamlit OR React + Plotly
-Backend: FastAPI + WebSocket
-ML:
-  - LSTM Autoencoder (TensorFlow/Keras) — temporal patterns
-  - Isolation Forest — multivariate outliers
-  - Ensemble voting (both must agree = high confidence)
-  - SHAP + LIME
-Data: Pandas pipeline, feature engineering (rolling stats, lag features)
-Viz: Seaborn + Plotly dashboards
-Deploy: Docker Compose
+**Steps:**
+1. Find neighbouring stations in a given radius (using the **Haversine distance** formula).
+2. Calculate a **robust Z-score** of a station's reading relative to its neighbours:
 
-Pros: Highest detection accuracy potential; LSTM-AE is research-backed
-Cons: Training time; harder to debug in 24h
+```
+Z_robust = (x − median(x_neighbours)) / (1.4826 × MAD(x_neighbours))
+```
 
-Key features to engineer:
-- Rolling mean/std (24h window)
-- Rate of change (°C/hour)
-- T–RH dew point residual
-- Hour-of-day + month (seasonality)
+Where:
+- `MAD` = Median Absolute Deviation = `median(|xᵢ − median(x)|)`
+- `1.4826` = scaling constant so MAD approximates the standard deviation for a normal distribution
+
+**Why robust stats:** using median/MAD (instead of mean/std) means the metric is not skewed by outliers, so one faulty station doesn't distort the comparison baseline for its neighbours.
+
+**Interpretation:** Low spatial Z-score → the station **agrees** with its neighbours (regionally consistent).
 
 ---
 
-### Option 3: Edge-Cloud Hybrid (Best for Innovation + Energy Efficiency)
+## Layer 6 — Fusion / Final Decision
 
-Best for: Teams with hardware/IoT member
+Combines outputs from the earlier layers (**Model flags**, 4 layers total) with the **Layer 5 spatial agreement** (5th, last) into a final verdict:
 
-Edge: ESP32 + DHT22/BMP280 sensors (or mock serial data)
-  - On-device rule checks (range, step, flatline counter)
-  - Sends flagged packets only → saves bandwidth/power
-Cloud: Python FastAPI + LSTM-AE + MongoDB
-Frontend: React dashboard
-ML: Scikit-learn (cloud) + threshold logic (edge)
-Comm: MQTT (Mosquitto broker)
+| Model Flags | Neighbours Agree (Low Spatial Z) | Verdict |
+|:---:|:---:|---|
+| Y | N | **High-confidence sensor fault** |
+| Y | Y | **Regional weather event** — not a fault, but an alert (regional weather change) |
+| N | N | Generally healthy — low-confidence corner case (age-related, decalibrated fault, etc.) |
+| N | Y | Neutral / no action |
 
-Pros: Hits Energy Efficiency (5%) + Practical Deployability (10%)
-Cons: Hardware debugging risk — always have a software fallback
-
-Demo trick: Even without real ESP32, simulate edge packets via a Python script publishing to MQTT.
+Anything requiring a **health-bag check** on the sensor (age/decalibration related, low confidence) is routed for maintenance review rather than an immediate fault alert.
 
 ---
 
-### Tech Stack Comparison
+## Fault Classification (Probable Causes)
 
-| Criterion | Option 1 (Web) | Option 2 (ML) | Option 3 (Edge) |
-|-----------|---------------|---------------|-----------------|
-| Build speed | ★★★★★ | ★★★ | ★★ |
-| Detection accuracy | ★★★ | ★★★★★ | ★★★★ |
-| Innovation score | ★★★ | ★★★★ | ★★★★★ |
-| Demo reliability | ★★★★★ | ★★★ | ★★★ |
-| Beginner friendly | ★★★★★ | ★★★ | ★★ |
+| Fault Type | Detected By Layer(s) | Probable Root Cause |
+|---|---|---|
+| **Spike** | Physics + ML | Voltage surge, EMI, lightning |
+| **Freeze** | 2nd derivative (Frozen Layer) | Sensor jam, ice/dust blocking |
+| **Gradual Drift** | ML layers alone (Physics won't catch it — each individual step is within physical bounds, but the *overall* trend bends abnormally over time; large-enough drift is eventually caught by the physics layer too) | Ageing / rusting / decalibration |
+| **Dropout / Gap** | Missing values (NaN) | Power-cut / supply failure |
+| **Cross-sensor Decoupling** | Physics layers + ML layers | A specific sensor develops a fault while other co-located sensors stay okay |
+| **Noise Burst** | ML layers (a lot of outliers / erratic values in a short window) | Loose connection, electrical interference |
+| **Impossible Combo** | Physics layers | e.g. pressure–altitude combo physically impossible, `RH ∉ (0,100)`, or `T < T_dew` |
 
-Recommendation: Start with Option 1 architecture, add Option 2's Isolation Forest + SHAP, and describe Option 3 on slides (edge diagram) even if not fully built.
-
----
-
-## 6. Pitch Deck (Slide-by-Slide)
-
-Use this structure for 8–10 slides, ~3 minutes:
-
-### Slide 1: Title
-SkyGuard AI
-Intelligent Real-Time Anomaly Detection for Automatic Weather Stations
-Team name | Hackathon name | Date
-
-### Slide 2: Problem
-- AWS networks power forecasts for 700M+ people
-- Bad sensor data → wrong forecasts → bad decisions (agriculture, aviation, disaster)
-- Real example: IMD Delhi AWS reported 52.9°C in May 2024 — faulty sensor, not reality
-- Current QC = static thresholds; misses complex, multivariate faults
-
-### Slide 3: Market Insight
-- IMD operates 707+ AWS stations across India
-- Rule-based QC achieves ~95% accuracy — 5% error rate on critical data
-- Global shift: ML autoencoders (Met Éireann, BMKG) outperform rules but not deployed at scale in India
-- Gap: No explainable, real-time, multivariate QC for T + P + RH
-
-### Slide 4: Solution Overview
-SkyGuard AI = 3-layer intelligent QC pipeline:
-
-Sensor Data → [Layer 1: Rule Pre-filter] → [Layer 2: ML Anomaly Detector]
-           → [Layer 3: Physics + Spatial Consistency] → Alert + Explanation
-
-- Real-time anomaly alerts with confidence scores
-- Root-cause classification (spike / flatline / drift / comm error)
-- Sensor health dashboard
-- Optional: corrected value estimation
-
-### Slide 5: MVP Demo
-Live demo script (3 min):
-1. Show normal stream (green status)
-2. Inject 55°C spike → alert fires, SHAP shows "temperature spike + physics violation"
-3. Inject flatline → "frozen sensor" root cause
-4. Show neighbor comparison table
-
-### Slide 6: USP / Innovation
-
-| Traditional QC | SkyGuard AI |
-|----------------|-------------|
-| Static thresholds | Adaptive ML + physics rules |
-| Single variable | Multivariate T–P–RH consistency |
-| Black box flag | SHAP explainability |
-| Reactive maintenance | Sensor health score (predictive) |
-| Cloud only | Edge + cloud hybrid |
-
-Grand Challenge answer: Yes — SkyGuard is the first step toward a self-healing, self-aware AWS network.
-
-### Slide 7: Technology Stack
-- ML: Python, Scikit-learn, Isolation Forest, LSTM-AE, SHAP
-- Backend: FastAPI / Node.js, WebSocket, MongoDB
-- Frontend: React/JS, Plotly, Chart.js
-- Edge (roadmap): ESP32, MQTT
-- Deploy: Docker, GitHub Actions
-
-### Slide 8: Results / Metrics
-
-| Metric | Target | Your Result |
-|--------|--------|-------------|
-| Precision | >90% | ___ |
-| Recall | >85% | ___ |
-| False alarm rate | <5% | ___ |
-| Inference latency | <500ms | ___ |
-| Anomaly types detected | 5+ | ___ |
-
-Use your injected test set with known labels for honest metrics.
-
-### Slide 9: Future Roadmap
-- Month 1–3: Integrate with IMD data formats (WMO BUFR)
-- Month 3–6: Multi-station spatial graph neural network
-- Month 6–12: ESP32 edge deployment pilots at 10 agro-AWS sites
-- Year 1+: SaaS API for private AWS operators, agri-tech integrations
-- Scale: 700+ stations → national QC layer
-
-### Slide 10: Team & Ask
-
-| Name | Role |
-|------|------|
-| ___ | ML Engineer |
-| ___ | Backend |
-| ___ | Frontend / Pitch |
-
-Ask: Feedback on deployment strategy with meteorological agencies
-GitHub: [link] | Live demo: [link]
+**Notes from the plan:**
+- **Gradual Drift** is the trickiest case — the physics layer will pass each individual reading since it's still within a plausible range, so the *overall* trend has to be watched instead (handled by the physics layer only as an eventual overstep, and otherwise caught by the ML layer). The ML-side detection for drift also needs different logic than a plain Isolation Forest run — Isolation Forest treats each point independently and isn't naturally suited to catching a slow, consistent trend, so drift detection leans on the trend-decomposition + Mann-Kendall test instead.
+- **Cross-sensor Decoupling** is confirmed by checking that *only one* sensor at a station is producing bad readings while its co-located sensors (and its spatial neighbours) still look healthy — this is what separates it from a **Regional Weather Event** (Layer 6), where multiple/neighbouring sensors would agree.
 
 ---
 
-## 7. Tips for Beginners to Win
+## Sensor Degradation & Maintenance
 
-### A. Align ruthlessly with scoring weights
+Sensors degrade over time due to ageing, corrosion, and wear/tear. Because this degradation is **gradual**, the anomaly detectors above won't reliably catch it (each individual reading looks "fine").
 
-| Weight | What judges want | Your move |
-|--------|------------------|-----------|
-| 25% Innovation | Novel approach | Physics-informed ML + spatial consistency + "self-healing" narrative |
-| 20% Accuracy | Works on test data | Pre-build anomaly injector; report Precision/Recall honestly |
-| 15% Real-time | Live demo | WebSocket stream, not static CSV screenshots |
-| 10% Explainability | SHAP/LIME | Show "Why flagged?" panel on every alert |
-| 10% Scalability | Architecture | Multi-station diagram even if demo uses 2 stations |
-| 10% Deployability | Runnable code | Docker + README with python demo.py |
-| 5% UI | Clean dashboard | Dark theme + map + alert feed beats raw Jupyter |
-| 5% Energy | Edge mention | ESP32 diagram + "edge pre-filter reduces cloud calls by 80%" |
-
-### B. Demo > Slides > Code (priority order)
-
-1. 3-minute live demo wins hackathons — rehearse it 5 times
-2. Record a backup video in case WiFi fails
-3. Slides support the demo; don't read slides
-4. Code on GitHub with a one-command run (docker compose up)
-
-### C. Storytelling that resonates in India
-
-- Open with the Delhi 52.9°C story — judges remember real incidents
-- Frame as: "Protecting 700 million people's weather data"
-- Connect to farmer, aviation, disaster management — not just ML metrics
-- Mention IMD, Ministry of Earth Sciences, Digital India alignment
-
-### D. Technical credibility without overengineering
-
-Do:
-- Hybrid approach (rules + ML ensemble)
-- Show SHAP bar chart for one alert
-- Pre-compute model; demo uses inference only (fast)
-- Inject known anomalies; report metrics on that set
-
-Don't:
-- Train a huge deep model live on stage
-- Claim 99% accuracy without test methodology
-- Build 10 features — build 4 that work perfectly
-- Use buzzwords (blockchain, metaverse) with no connection
-
-### E. Judge Q&A prep (likely questions)
-
-| Question | Strong answer |
-|----------|---------------|
-| How is this different from IMD's existing QC? | IMD uses static rules; we add adaptive ML + explainability + spatial neighbor checks |
-| Won't ML flag real heatwaves as anomalies? | Physics consistency layer: if neighbors also show high T, it's weather; if isolated, it's sensor fault |
-| Can this run on ESP32? | Rules yes; full ML runs cloud-side; edge sends pre-filtered alerts — 80% bandwidth saving |
-| What data did you use? | Historical AWS-style synthetic + injected faults; architecture supports IMD BUFR format |
-| How do you measure accuracy? | Labeled injected test set: X% precision, Y% recall across 5 anomaly types |
+→ **Solution:** maintain a running **sensor health score**, tracked independently of live anomaly detection, to flag sensors due for maintenance before they start producing bad data.
 
 ---
 
-## 8. Anomaly Injection Strategy (Critical for Evaluation)
+## Summary — All Layers
 
-Build a script that injects these into clean data:
+1. **Physics Sanity Checks** — Relations, Dew ↔ Air Temp, RH ∈ (0,100), physical bound checks, NWP-global extreme value bounds, rate-of-change bounds.
+2. **ML Layer** — Isolation Forest + SHAP (explainability), Time Series Decomposition + Rate of Change (Mann-Kendall trend test).
+3. **Frozen Sensor Layer** — 2nd derivative ≈ 0 detection.
+4. **Forecasting Layer** — Chronos-2 predicts the next reading; absolute error vs. actual reading flags anomalies (threshold still to be tuned per-variable due to differing volatility).
+5. **Spatial Consistency Layer** — Haversine-based neighbour matching + robust Z-score (median/MAD).
+6. **Fusion Layer** — combines Model Flags + Spatial Agreement into a final confidence verdict (sensor fault vs. regional weather event vs. healthy).
 
-ANOMALY_TYPES = {
-    "SPIKE":       "Sudden +20°C in 1 reading",
-    "FLATLINE":    "Same value for 24+ consecutive readings",
-    "DRIFT":       "Gradual +0.5°C/hour over 48 hours",
-    "COMM_GAP":    "Missing data burst (NaN sequence)",
-    "PHYSICS_VIOLATION": "T=55°C, RH=95%, P=980hPa simultaneously",
-}
-
-Evaluation approach:
-1. Take 1,000 clean readings
-2. Inject 50 known anomalies (10 per type)
-3. Run SkyGuard → measure TP, FP, FN, TN
-4. Present confusion matrix on Slide 8
-
----
-
-## 9. Suggested Repository Structure
-
-skyguard-ai/
-├── README.md              # Setup + demo instructions
-├── docker-compose.yml
-├── data/
-│   ├── sample_aws.csv
-│   └── injected_test.csv
-├── ml/
-│   ├── preprocess.py
-│   ├── train.py
-│   ├── detect.py          # Inference + SHAP
-│   └── anomaly_injector.py
-├── backend/
-│   ├── app.py             # FastAPI
-│   └── websocket_stream.py
-├── frontend/
-│   ├── index.html
-│   ├── dashboard.js
-│   └── styles.css
-├── docs/
-│   └── USE_CASES.md       # Required deliverable
-└── demo/
-    └── run_demo.sh        # One-command demo
-
----
-
-## 10. 48-Hour Priority Checklist (Print This)
-
-□ Hour 0:   Scope locked, roles assigned, repo created
-□ Hour 4:   Sample data loaded, anomaly injector working
-□ Hour 8:   Rule-based QC + Isolation Forest detecting 3+ anomaly types
-□ Hour 14:  SHAP explanations working
-□ Hour 18:  API + WebSocket streaming
-□ Hour 22:  Dashboard showing live alerts
-□ Hour 28:  3 demo scenarios scripted and tested
-□ Hour 32:  Metrics computed on injected test set
-□ Hour 36:  Pitch deck complete
-□ Hour 40:  README + USE_CASES.md written
-□ Hour 44:  Demo rehearsed 3x, backup video recorded
-□ Hour 48:  SUBMIT + SLEEP
-
----
-
-## Summary: Your Winning Formula
-
-| Pillar | Action |
-|--------|--------|
-| Problem | Lead with Delhi 52.9°C — real, relatable, urgent |
-| Solution | Hybrid rules + ML + physics + spatial checks |
-| Demo | Live stream → inject fault → explain alert → show health score |
-| Differentiation | Explainability + root-cause + self-healing vision |
-| Realism | Working MVP on 3 variables, 2 stations, 5 anomaly types |
-| Presentation | 3 min demo, 2 min slides, 1 min Q&A prep |
-
----
-
-Next steps (optional):
-1. Generate the starter codebase (anomaly injector + Isolation Forest + dashboard skeleton)
-2. Write the USE_CASES.md document for submission
-3. Create slide content as a ready-to-copy markdown file for Google Slides/PPT
-4. Build a synthetic AWS dataset with pre-injected anomalies for testing
+Supporting: **Data pipeline** (Open-Meteo + anomaly injection → time-series DB → replay), **Fault classification table**, and **Sensor health/maintenance tracking**.
