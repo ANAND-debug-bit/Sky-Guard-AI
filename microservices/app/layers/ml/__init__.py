@@ -43,8 +43,8 @@ def isolation_forest_shap(batch_df,model,explainer,features):
     anom_idx = batch_df.index[predictions == -1]
     
     #shap
-    if not anom_idx.empty:#so thats hap doent get a data with no anomalies
-        # 3. FIX: Update the anomaly flag from 0 to 1 for the broken rows
+    if not anom_idx.empty:#so that  shap doent get a data with no anomalies
+        # 3. updating the anomaly flag from 0 to 1 for the broken rows
         result_df.loc[anom_idx, 'predicted_anomaly'] = 1
 
         # shap
