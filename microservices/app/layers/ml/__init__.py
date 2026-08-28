@@ -69,7 +69,7 @@ df_eval = pd.read_parquet('aws_evaluation_dataset.parquet')
 df_eval['hour'] = pd.to_datetime(df_eval['timestamp']).dt.hour
 test_batch=df_eval
 ml_alerts=isolation_forest_shap(test_batch,isolation_forest,explainer,features)
-print(ml_alerts[ml_alerts['predicted_anomaly'] == 1].head())
+
 
 #=============================================================================================================================
 #-----------------------------------------------------------------------------------------------------------------------------
@@ -78,3 +78,4 @@ print(ml_alerts[ml_alerts['predicted_anomaly'] == 1].head())
 #-----------------------------gap_layer----------------------------
 
 
+ 
