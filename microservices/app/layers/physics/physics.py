@@ -1,5 +1,5 @@
 """
-Layer 1 — Physics Sanity Checks
+Layer 1 — Physics
 ================================
 SkyGuard AI — Sky-Guard-AI/microservices/app/layers/physics
 
@@ -11,7 +11,7 @@ import numpy as np
 
 
 
-# Magnus formula constants (Alduchov–Eskridge approximation). Standard published constants for this formula — not tuned by us valid for T in [-40°C, 50°C].
+# Magnus formula constants (Alduchov–Eskridge approximation). Standard published constants for this formula not tuned by us valid for T in [-40°C, 50°C].
 MAGNUS_A = 17.625
 MAGNUS_B = 243.04  # °C
 MAGNUS_VALID_T_MIN = -40.0
@@ -99,7 +99,7 @@ def depression(t_air: float, t_dew: float) -> float:
     return t_air - t_dew
 
 #--
-# BATCH RULE LAYER — matches the team's layer_template(batch_df) contract.
+# BATCH RULE LAYER  matches the team's layer_template(batch_df) contract.
 # Real column names from the repo: time, station_id, temp_c, pressure_hpa,
 # humidity_pct, elevation_m.
 #--
@@ -108,20 +108,20 @@ def layer1_physics(batch_df: pd.DataFrame) -> pd.DataFrame:
     Layer 1: Physics Sanity Checks.
 
     Rule priority when multiple checks fail on the same row (contract
-    only allows one reason per row — see open question with the team
+    only allows one reason per row  see open question with the team
     about whether multi-flag rows are supported):
         1. RH out of bounds        (most direct, cheapest to check)
         2. Extreme temperature     (independent of RH)
         3. Pressure out of range   (independent of RH and T)
-        4. T_dew > T_air           (kept for ideation consistency — currently
+        4. T_dew > T_air           (kept for ideation consistency  currently
                                      a no-op in practice, see KNOWN LIMITATION
                                      note near the top of this file)
-        5. Depression check        (soft/informational — same note)
+        5. Depression check        (soft/informational  same note)
     First one that fires wins and is reported; the row is still only
     flagged once even if more than one rule would have fired.
 
     Returns a DataFrame in the shared contract shape, plus two extra
-    columns (P_MSL, T_dew) that downstream layers — L5 in particular —
+    columns (P_MSL, T_dew) that downstream layers  L5 in particular 
     need and shouldn't have to recompute themselves.
     """
     result_df = pd.DataFrame()
@@ -169,7 +169,7 @@ def layer1_physics(batch_df: pd.DataFrame) -> pd.DataFrame:
         axis=1
     )
 
-    # --- Rule 1: RH bounds (hard) — only rows not already flagged by Rule 0 ---
+    # --- Rule 1: RH bounds (hard) only rows not already flagged by Rule 0 ---
     remaining = result_df['predicted_anomaly'] == 0
     rh_broken = remaining & ((batch_df['humidity_pct'] < 0) | (batch_df['humidity_pct'] > 100))
     idx = rh_broken[rh_broken].index
