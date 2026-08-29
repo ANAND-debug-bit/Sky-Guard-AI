@@ -29,21 +29,13 @@ MAGNUS_VALID_T_MAX = 50.0
 # Small safety margin added above the record high since a real reading
 # could legitimately edge past a 9-year-old record without being a fault.
 #
-# Real-world cautionary example for why this matters: in 2024, an
-# automated sensor in Mungeshpur, Delhi reported 52.9°C — later flagged
-# by experts as a likely sensor error and excluded from official records.
-# This bound exists to catch exactly that automatically.
+# Real-world cautionary example for why this matters: in 2024, an automated sensor in Mungeshpur, Delhi reported 52.9°C :later flagged by experts as a likely sensor error and excluded from official records. This bound exists to catch exactly that automatically.
 
 
 TEMP_MIN_C = -45.0
 TEMP_MAX_C = 52.0
 
-# recorded central pressures as low as ~927–932 hPa (2001 Gujarat cyclone)
-# and ~943 hPa (1977 Andhra Pradesh cyclone, one of the deadliest ever
-# recorded). Standard MSL pressure globally is 1013.25 hPa; Indian
-# high-pressure systems rarely push much past the mid-1030s hPa. Widened
-# beyond the most extreme landfall readings since stations rarely sit
-# exactly at a cyclone's eye, so a real severe event is never flagged.
+# recorded central pressures as low as ~927–932 hPa (2001 Gujarat cyclone) and ~943 hPa (1977 Andhra Pradesh cyclone, one of the deadliest ever recorded). Standard MSL pressure globally is 1013.25 hPa; Indian high-pressure systems rarely push much past the mid-1030s hPa. Widened beyond the most extreme landfall readings since stations rarely sit exactly at a cyclone's eye, so a real severe event is never flagged.
 PRESSURE_MIN_HPA = 920.0
 PRESSURE_MAX_HPA = 1050.0
 
@@ -52,9 +44,7 @@ PRESSURE_MAX_HPA = 1050.0
 
 
 
-# ---------------------------------------------------------------------------
-# CORE MATH FUNCTIONS (single reading, pure, unit-tested)
-# ---------------------------------------------------------------------------
+# CORE MATH FUNCTIONS
 
 def msl_pressure(p_station_hpa: float, t_celsius: float, h_m: float) -> float:
     """
@@ -87,8 +77,7 @@ def dew_point(t_celsius: float, rh_percent: float) -> float:
 
 def magnus_confidence(t_celsius: float) -> float:
     """
-    Confidence (0-100) in the Magnus formula's result. Full confidence
-    (100) anywhere inside its proven valid range (-40 to 50°C) — no
+    Confidence (0-100) in the Magnus formula's result. Full confidence (100) anywhere inside its proven valid range (-40 to 50°C) — no
     manufactured doubt near the edge, since there's no evidence the
     formula is less accurate at 49°C than at 20°C. Tapers only once PAST
     the proven range, reaching 0 at the hard Indian extreme bound
@@ -156,13 +145,7 @@ def layer1_physics(batch_df: pd.DataFrame) -> pd.DataFrame:
     result_df['layer_used'] = 'Layer 1: Physics Sanity Checks'
 
     # --- Rule 0: missing/NaN readings (hard) runs FIRST ---
-    # Without this, a NaN in temp_c/humidity_pct/pressure_hpa silently
-    # passes every other rule as "clean": pandas comparisons against NaN
-    # (NaN < 0, NaN > 100, etc.) always evaluate to False, so a missing
-    # reading was previously indistinguishable from a genuinely good one.
-    # A missing reading is a dropout, not clean data , flag it explicitly
-    # and skip the other rules for that row (nothing downstream can be
-    # trusted from a NaN input anyway).
+    # Without this, a NaN in temp_c/humidity_pct/pressure_hpa silently passes every other rule as "clean": pandas comparisons against NaN (NaN < 0, NaN > 100, etc.) always evaluate to False, so a missing reading was previously indistinguishable from a genuinely good one. A missing reading is a dropout, not clean data , flag it explicitly and skip the other rules for that row (nothing downstream can be  trusted from a NaN input anyway).
     core_cols = ['temp_c', 'humidity_pct', 'pressure_hpa']
     missing = batch_df[core_cols].isna().any(axis=1)
     idx = missing[missing].index
@@ -177,18 +160,12 @@ def layer1_physics(batch_df: pd.DataFrame) -> pd.DataFrame:
         result_df.loc[idx, 'expected_cause'] = 'Power cut, supply failure, or communication dropout'
         result_df.loc[idx, 'recommended_action'] = 'Check station connectivity/power; verify next batch'
 
-    # Derived values other layers need computed once here, not
-    # recomputed downstream (see msl_pressure docstring). NaN inputs
-    # produce NaN outputs here safely (no crash) those rows are already
-    # flagged by Rule 0 above, so downstream rules skip them via the
-    # `remaining` mask pattern.
+    # Derived values other layers need computed once here, not recomputed downstream (see msl_pressure docstring). NaN input produce NaN outputs here safely (no crash) those rows are already flagged by Rule 0 above, so downstream rules skip them via the remaining mask pattern.
     result_df['P_MSL'] = batch_df.apply(
         lambda r: msl_pressure(r['pressure_hpa'], r['temp_c'], r['elevation_m']),
         axis=1
     )
-    # T_dew only meaningful for RH in (0, 100]; guard against log(<=0)
-    # domain errors for already-invalid or missing RH (that row is
-    # already caught by Rule 0 or the RH-bounds rule below).
+    # T_dew only meaningful for RH in (0, 100]; guard against log(<=0) domain errors for already-invalid or missing RH (that row is already caught by Rule 0 or the RH-bounds rule below).
     result_df['T_dew'] = batch_df.apply(
         lambda r: dew_point(r['temp_c'], r['humidity_pct'])
         if pd.notna(r['humidity_pct']) and 0 < r['humidity_pct'] <= 100 else np.nan,
@@ -244,9 +221,7 @@ def layer1_physics(batch_df: pd.DataFrame) -> pd.DataFrame:
         result_df.loc[idx, 'recommended_action'] = 'Inspect/replace humidity probe'
 
     # --- Rule 5: depression check 
-    # Same limitation as Rule 4. Recorded as informational only does not
-    # set predicted_anomaly, since it currently carries no information
-    # beyond what RH already reports.
+    # Same limitation as Rule 4. Recorded as informational only does not set predicted_anomaly, since it currently carries no information beyond what RH already reports.
     result_df['depression_c'] = batch_df['temp_c'] - result_df['T_dew']
 
     return result_df
@@ -324,9 +299,8 @@ def _run_batch_tests():
     assert not result.loc[result.index != 5, 'P_MSL'].isna().any(), \
         "P_MSL must be computed for every row with valid inputs"
 
-    # Rules 4/5 (ideation-consistency, documented no-ops) must exist and
-    # must not flag anything beyond what Rule 1 already catches — proving
-    # the KNOWN LIMITATION note is actually true, not just claimed.
+    # Rules 4/5 (ideation-consistency, documented no-ops) must exist and must not flag anything beyond what Rule 1 already catches, proving the KNOWN LIMITATION note is actually true, not just claimed.
+
     assert 'depression_c' in result.columns
     only_rh_and_downstream_flagged = result.loc[
         result['predicted_anomaly'] == 1, 'sensor_type'
