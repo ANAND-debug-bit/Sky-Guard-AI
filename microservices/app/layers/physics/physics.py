@@ -10,7 +10,6 @@ import pandas as pd
 import numpy as np
 
 
-# CONSTANTS — every bound here is sourced, not guessed. Rationale + real examples are in the comments so anyone (a teammate, a judge asking "where does this number come from") can trace it back.
 
 # Magnus formula constants (Alduchov–Eskridge approximation). Standard published constants for this formula — not tuned by us valid for T in [-40°C, 50°C].
 MAGNUS_A = 17.625
@@ -136,7 +135,7 @@ def layer1_physics(batch_df: pd.DataFrame) -> pd.DataFrame:
     result_df['recommended_action'] = None
     result_df['layer_used'] = 'Layer 1: Physics Sanity Checks'
 
-    # --- Rule 0: missing/NaN readings (hard) — runs FIRST ---
+    # --- Rule 0: missing/NaN readings (hard) ; runs FIRST ---
 
     core_cols = ['temp_c', 'humidity_pct', 'pressure_hpa']
     missing = batch_df[core_cols].isna().any(axis=1)
@@ -325,6 +324,8 @@ def _run_batch_tests():
     print("Batch rule tests: passed.")
 
 
+
+# this function was added after the reporting of 471 false positives (should have been0 ) it was flagging the saturation point which in fact is entirely plausible  when it comes to winter mornings.
 def _run_fog_regression_test():
     """
     Regression test for the false-positive bug found via df_eval (real
@@ -346,9 +347,8 @@ def _run_fog_regression_test():
     assert (result['predicted_anomaly'] == 0).all(), \
         "genuine RH=100% fog conditions must NOT be flagged (this was the real bug)"
 
-    # Make sure the fix didn't gut real detection: a genuine RH>100 fault
-    # must still be caught (this already goes through Rule 1 first, but
-    # confirm Rule 4's epsilon doesn't mask an actual violation either).
+    # Make sure the fix didn't gut real detection: a genuine RH>100 fault (flagged this in delhi's fog now fixed )
+
     fault_batch = pd.DataFrame({
         'time': pd.to_datetime(['2023-01-01 00:00']),
         'station_id': ['DEL001'],
