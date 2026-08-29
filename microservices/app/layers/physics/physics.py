@@ -117,23 +117,23 @@ def depression(t_air: float, t_dew: float) -> float:
     return t_air - t_dew
 
 
-# ---------------------------------------------------------------------------
+# -
 # BATCH RULE LAYER — matches the team's layer_template(batch_df) contract.
 # Real column names from the repo: time, station_id, temp_c, pressure_hpa,
 # humidity_pct, elevation_m.
-# ---------------------------------------------------------------------------
+# -
 
 def layer1_physics(batch_df: pd.DataFrame) -> pd.DataFrame:
     """
     Layer 1: Physics Sanity Checks.
 
     Rule priority when multiple checks fail on the same row (contract
-    only allows one reason per row — see open question with the team
+    only allows one reason per row : see open question with the team
     about whether multi-flag rows are supported):
         1. RH out of bounds        (most direct, cheapest to check)
         2. Extreme temperature     (independent of RH)
         3. Pressure out of range   (independent of RH and T)
-        4. T_dew > T_air           (kept for ideation consistency — currently
+        4. T_dew > T_air           (kept for ideation consistency currently
                                      a no-op in practice, see KNOWN LIMITATION
                                      note near the top of this file)
         5. Depression check        (soft/informational — same note)
@@ -141,7 +141,7 @@ def layer1_physics(batch_df: pd.DataFrame) -> pd.DataFrame:
     flagged once even if more than one rule would have fired.
 
     Returns a DataFrame in the shared contract shape, plus two extra
-    columns (P_MSL, T_dew) that downstream layers — L5 in particular —
+    columns (P_MSL, T_dew) that downstream layers  L5 in particular 
     need and shouldn't have to recompute themselves.
     """
     result_df = pd.DataFrame()
@@ -155,12 +155,12 @@ def layer1_physics(batch_df: pd.DataFrame) -> pd.DataFrame:
     result_df['recommended_action'] = None
     result_df['layer_used'] = 'Layer 1: Physics Sanity Checks'
 
-    # --- Rule 0: missing/NaN readings (hard) — runs FIRST ---
+    # --- Rule 0: missing/NaN readings (hard) runs FIRST ---
     # Without this, a NaN in temp_c/humidity_pct/pressure_hpa silently
     # passes every other rule as "clean": pandas comparisons against NaN
     # (NaN < 0, NaN > 100, etc.) always evaluate to False, so a missing
     # reading was previously indistinguishable from a genuinely good one.
-    # A missing reading is a dropout, not clean data — flag it explicitly
+    # A missing reading is a dropout, not clean data , flag it explicitly
     # and skip the other rules for that row (nothing downstream can be
     # trusted from a NaN input anyway).
     core_cols = ['temp_c', 'humidity_pct', 'pressure_hpa']
@@ -177,9 +177,9 @@ def layer1_physics(batch_df: pd.DataFrame) -> pd.DataFrame:
         result_df.loc[idx, 'expected_cause'] = 'Power cut, supply failure, or communication dropout'
         result_df.loc[idx, 'recommended_action'] = 'Check station connectivity/power; verify next batch'
 
-    # Derived values other layers need — computed once here, not
+    # Derived values other layers need computed once here, not
     # recomputed downstream (see msl_pressure docstring). NaN inputs
-    # produce NaN outputs here safely (no crash) — those rows are already
+    # produce NaN outputs here safely (no crash) those rows are already
     # flagged by Rule 0 above, so downstream rules skip them via the
     # `remaining` mask pattern.
     result_df['P_MSL'] = batch_df.apply(
@@ -207,7 +207,7 @@ def layer1_physics(batch_df: pd.DataFrame) -> pd.DataFrame:
         result_df.loc[idx, 'expected_cause'] = 'Sensor fault, saturation, or wiring/calibration error'
         result_df.loc[idx, 'recommended_action'] = 'Inspect/replace humidity probe'
 
-    # --- Rule 2: extreme temperature (hard) — only rows not already flagged ---
+    # --- Rule 2: extreme temperature (hard) only rows not already flagged ---
     remaining = result_df['predicted_anomaly'] == 0
     temp_broken = remaining & ((batch_df['temp_c'] < TEMP_MIN_C) | (batch_df['temp_c'] > TEMP_MAX_C))
     idx = temp_broken[temp_broken].index
@@ -219,7 +219,7 @@ def layer1_physics(batch_df: pd.DataFrame) -> pd.DataFrame:
         result_df.loc[idx, 'expected_cause'] = 'Voltage surge, EMI, lightning, or sensor fault'
         result_df.loc[idx, 'recommended_action'] = 'Flag for immediate inspection; cross-check with neighbouring stations (L5)'
 
-    # --- Rule 3: pressure plausible range (hard) — only rows not already flagged ---
+    # --- Rule 3: pressure plausible range (hard) only rows not already flagged ---
     remaining = result_df['predicted_anomaly'] == 0
     p_broken = remaining & ((result_df['P_MSL'] < PRESSURE_MIN_HPA) | (result_df['P_MSL'] > PRESSURE_MAX_HPA))
     idx = p_broken[p_broken].index
@@ -244,7 +244,7 @@ def layer1_physics(batch_df: pd.DataFrame) -> pd.DataFrame:
         result_df.loc[idx, 'recommended_action'] = 'Inspect/replace humidity probe'
 
     # --- Rule 5: depression check 
-    # Same limitation as Rule 4. Recorded as informational only — does not
+    # Same limitation as Rule 4. Recorded as informational only does not
     # set predicted_anomaly, since it currently carries no information
     # beyond what RH already reports.
     result_df['depression_c'] = batch_df['temp_c'] - result_df['T_dew']
@@ -254,18 +254,9 @@ def layer1_physics(batch_df: pd.DataFrame) -> pd.DataFrame:
 
 def layer1_confidence(batch_df: pd.DataFrame, result_df: pd.DataFrame) -> pd.DataFrame:
     """
-    Separate confidence dataframe, per team agreement on WhatsApp:
-    columns anomaly_binary, time, station_id, confidence_score — kept out
-    of the main returning df so it doesn't break concat when all layers'
-    outputs are merged. Merge happens later, once every layer's output is
-    stable (also per that thread).
+   
 
-    confidence_score here is Magnus-formula confidence (see
-    magnus_confidence docstring) — genuine computed logic, not the
-    hardcoded ~50 placeholder floated as a fallback in the team chat. If
-    the team merges this in expecting a flat 50, flag that this is
-    already a real (if simple) scoring function, not a stub — worth a
-    heads-up before merge so nobody overwrites it by accident.
+    confidence_score here is Magnus-formula confidence
     """
     confidence_df = pd.DataFrame()
     confidence_df['time'] = batch_df['time']
@@ -328,8 +319,7 @@ def _run_batch_tests():
     assert result.loc[5, 'anomaly_reason'] == 'Missing/NaN reading'
 
     # P_MSL and T_dew must be present as columns; NaN is expected (and
-    # correct) for the missing-input row 5 — that's Rule 0 doing its job,
-    # not a bug. Only assert no-NaN for the rows with valid inputs.
+    #only assert no-NaN for the rows with valid inputs.
     assert 'P_MSL' in result.columns and 'T_dew' in result.columns
     assert not result.loc[result.index != 5, 'P_MSL'].isna().any(), \
         "P_MSL must be computed for every row with valid inputs"
@@ -343,7 +333,7 @@ def _run_batch_tests():
     ].isin(['humidity_pct', 'temp_c', 'pressure_hpa']).all()
     assert only_rh_and_downstream_flagged
 
-    # --- confidence_df ---
+    #  confidence_df 
     confidence = layer1_confidence(batch, result)
     assert list(confidence.columns) == ['time', 'station_id', 'anomaly_binary', 'confidence_score']
     assert len(confidence) == 6
