@@ -64,19 +64,7 @@ def dew_point(t_celsius: float, rh_percent: float) -> float:
 
 
 def magnus_confidence(t_celsius: float) -> float:
-    """
-    Confidence (0-100) in the Magnus formula's result. Full confidence
-    (100) anywhere inside its proven valid range (-40 to 50°C) no
-    manufactured doubt near the edge, since there's no evidence the
-    formula is less accurate at 49°C than at 20°C. Tapers only once PAST
-    the proven range, reaching 0 at the hard Indian extreme bound
-    (TEMP_MAX_C / TEMP_MIN_C).
 
-    A missing/NaN input returns 0 confidence directly there's nothing
-    to have confidence in. (Rule 0 in layer1_physics already flags a
-    missing reading as its own anomaly; this just keeps the confidence
-    score consistent with that rather than producing NaN or crashing.)
-    """
     if math.isnan(t_celsius):
         return 0.0
     if MAGNUS_VALID_T_MIN <= t_celsius <= MAGNUS_VALID_T_MAX:
@@ -91,11 +79,7 @@ def magnus_confidence(t_celsius: float) -> float:
 
 
 def depression(t_air: float, t_dew: float) -> float:
-    """
-    T_air - T_dew. Kept for ideation consistency (see KNOWN LIMITATION
-    note near the top of this file) currently circular with the RH
-    reading it's derived from, see Rule 5 in layer1_physics below.
-    """
+   
     return t_air - t_dew
 
 #--
@@ -151,11 +135,7 @@ def layer1_physics(batch_df: pd.DataFrame) -> pd.DataFrame:
         result_df.loc[idx, 'expected_cause'] = 'Power cut, supply failure, or communication dropout'
         result_df.loc[idx, 'recommended_action'] = 'Check station connectivity/power; verify next batch'
 
-    # Derived values other layers need computed once here, not
-    # recomputed downstream (see msl_pressure docstring). NaN inputs
-    # produce NaN outputs here safely (no crash) those rows are already
-    # flagged by Rule 0 above, so downstream rules skip them via the
-    # `remaining` mask pattern.
+
     result_df['P_MSL'] = batch_df.apply(
         lambda r: msl_pressure(r['pressure_hpa'], r['temp_c'], r['elevation_m']),
         axis=1
@@ -225,20 +205,7 @@ def layer1_physics(batch_df: pd.DataFrame) -> pd.DataFrame:
 
 
 def layer1_confidence(batch_df: pd.DataFrame, result_df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Separate confidence dataframe, per team agreement on WhatsApp:
-    columns anomaly_binary, time, station_id, confidence_score kept out
-    of the main returning df so it doesn't break concat when all layers'
-    outputs are merged. Merge happens later, once every layer's output is
-    stable (also per that thread).
 
-    confidence_score here is Magnus-formula confidence (see
-    magnus_confidence docstring)  genuine computed logic, not the
-    hardcoded ~50 placeholder floated as a fallback in the team chat. If
-    the team merges this in expecting a flat 50, flag that this is
-    already a real (if simple) scoring function, not a stub worth a
-    heads-up before merge so nobody overwrites it by accident.
-    """
     confidence_df = pd.DataFrame()
     confidence_df['time'] = batch_df['time']
     confidence_df['station_id'] = batch_df['station_id']
