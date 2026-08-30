@@ -12,13 +12,16 @@ pd.set_option('display.width', 2000)             # Expand the terminal width thr
 #raw data 
 df = pd.read_parquet("data/raw/aws_clean_baseline.parquet")
 #--------------------------------------training----------------------------------------
+#adding gaps in subsequent values to enable time awareness as gap is time independent but values are time dependent like day or night
+df['timestamp'] = pd.to_datetime(df['timestamp'])
+df = df.sort_values(['station_id', 'timestamp'])
+df['temp_jump'] = df.groupby('station_id')['temp_c'].diff().fillna(0)
+df['pressure_jump'] = df.groupby('station_id')['pressure_hpa'].diff().fillna(0)
+df['hour'] = df['timestamp'].dt.hour
 
-features = ['temp_c', 'pressure_hpa', 'humidity_pct']
-#extracting hours from. datetime so as to learn the day apttermn
-df['hour'] = pd.to_datetime(df['timestamp']).dt.hour
-features.append('hour')
-
-isolation_forest = IsolationForest(n_estimators=100, contamination=0.01, random_state=42)#currrently expecting 1%data to be anomalous
+features = ['temp_c', 'pressure_hpa', 'humidity_pct', 'hour', 'temp_jump', 'pressure_jump']
+#---------------------------------------------------
+isolation_forest = IsolationForest(n_estimators=100, contamination="auto", random_state=42)#changed contamination to auto from 1% 
 isolation_forest.fit(df[features])
 
 explainer=shap.TreeExplainer(isolation_forest)
@@ -29,6 +32,11 @@ def isolation_forest_shap(batch_df,model,explainer,features):
     result_df=pd.DataFrame()
     result_df["time"]=batch_df["timestamp"]
     result_df['station_id'] = batch_df['station_id']
+    #-------adding is_anomaly col in resultant daatset
+    if 'is_anomaly' in batch_df.columns:
+        result_df['is_anomaly'] = batch_df['is_anomaly']
+
+
     result_df['predicted_anomaly'] = 0 
     result_df['sensor_type'] = None
     result_df['anomaly_value'] = np.nan
@@ -66,7 +74,12 @@ def isolation_forest_shap(batch_df,model,explainer,features):
 
 #-----------------------testing--------------------------
 df_eval = pd.read_parquet('aws_evaluation_dataset.parquet')
-df_eval['hour'] = pd.to_datetime(df_eval['timestamp']).dt.hour
+df_eval['timestamp'] = pd.to_datetime(df_eval['timestamp'])
+df_eval = df_eval.sort_values(['station_id', 'timestamp'])
+df_eval['temp_jump'] = df_eval.groupby('station_id')['temp_c'].diff().fillna(0)
+df_eval['pressure_jump'] = df_eval.groupby('station_id')['pressure_hpa'].diff().fillna(0)
+df_eval['hour'] = df_eval['timestamp'].dt.hour
+#----------------
 test_batch=df_eval
 # ml_alerts=isolation_forest_shap(test_batch,isolation_forest,explainer,features)
 # print(ml_alerts[ml_alerts["predicted_anomaly"]==1].head())
@@ -236,5 +249,45 @@ def maintenance_report(hourly_df,sensors):
 df = pd.read_parquet("data/raw/aws_clean_baseline.parquet")
 sensors=['temp_c','pressure_hpa','humidity_pct']
 health_data=maintenance_report(df,sensors)
-print(health_data)
+# print(health_data)
 #------------the data is really interesting(its run on real data, see present condition of sensors , we can use that in our pitch showing flaws in present infra)
+
+
+
+from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
+
+def evaluate_ml_layer(ml_results_df, true_label_col='is_anomaly'):
+    """
+    Calculates enterprise-grade performance metrics for the Isolation Forest layer.
+    Requires a ground truth column in the evaluation dataset to compare against.
+    """
+    # Check if the dataset actually has a column telling us what was a real anomaly
+    if true_label_col not in ml_results_df.columns:
+        return f"Error: Ground truth column '{true_label_col}' not found in the dataframe."
+    
+    y_true = ml_results_df[true_label_col]
+    y_pred = ml_results_df['predicted_anomaly']
+    
+    metrics = {
+        "Accuracy (%)": round(accuracy_score(y_true, y_pred) * 100, 2),
+        "Precision (%)": round(precision_score(y_true, y_pred, zero_division=0) * 100, 2),
+        "Recall (%)": round(recall_score(y_true, y_pred, zero_division=0) * 100, 2),
+        "F1-Score (%)": round(f1_score(y_true, y_pred, zero_division=0) * 100, 2)
+    }
+    
+    return pd.DataFrame([metrics])
+
+df_eval = pd.read_parquet('aws_evaluation_dataset.parquet')
+
+# --- Calculating the jumps for the evaluation dataset ---
+df_eval['timestamp'] = pd.to_datetime(df_eval['timestamp'])
+df_eval = df_eval.sort_values(['station_id', 'timestamp'])
+df_eval['temp_jump'] = df_eval.groupby('station_id')['temp_c'].diff().fillna(0)
+df_eval['pressure_jump'] = df_eval.groupby('station_id')['pressure_hpa'].diff().fillna(0)
+df_eval['hour'] = df_eval['timestamp'].dt.hour
+# ------------------------------------------------------
+
+ml_alerts = isolation_forest_shap(df_eval, isolation_forest, explainer, features)
+ml_metrics = evaluate_ml_layer(ml_alerts, true_label_col='is_anomaly') # Change 'is_anomaly' if named differently
+print("\n--- ML Layer 2 Performance Metrics ---")
+print(ml_metrics)
