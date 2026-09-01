@@ -1,454 +1,389 @@
+"""
+SkyGuard AI — core entry point (v2, fresh start)
+================================================
+Static replay: read datasets from ../data/, run Layer 1 physics (per row),
+Layer 2 ML (per batch) and Layer 4 forecasting (sliding window) from
+../layers_v2/.
+
+Layers exchange plain Python dicts per the AGENTS.md payload contract;
+core is the only place DataFrames/parquet exist.
+
+A test layer (config.RUN_TEST) runs L1+L2(+L4) on the injected evaluation
+dataset and compares flags against the is_anomaly ground-truth labels.
+
+Run from microservices/app/core:
+    python main.py
+
+Which dataset and how many rows are controlled by variables in config.py.
+"""
+
 import sys
-import time
-import traceback
-import requests
-import json
-import config
+from pathlib import Path
+
 import numpy as np
 import pandas as pd
-from collections import deque
-import shap
-from sklearn.ensemble import IsolationForest
 
-# run from core
-sys.path.insert(0, "../layers/forecasting")
-from predictor import predict
-from chronos import Chronos2Pipeline
+# Make imports work when run from anywhere under microservices/app/core.
+APP_DIR = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(APP_DIR))
+
+import config  # noqa: E402
+from layers_v2.ml import FEATURES, isolation_forest_shap, train_ml_model  # noqa: E402
+from layers_v2.physics import evaluate_physics  # noqa: E402
+
+# Columns that describe the station, not the sensor reading.
+STATION_COLS = ["lat", "lon", "elevation_m"]
+
+# Context window size for the L4 forecast (predictor used N=20).
+FORECAST_CONTEXT = 20
 
 
-# ── ML layer (inlined from ml_code.py — original file untouched) ─────
-def isolation_forest_shap(batch_df, model, explainer, features):
-    result_df = pd.DataFrame()
-    result_df["time"] = batch_df["timestamp"]
-    result_df["station_id"] = batch_df["station_id"]
-    result_df["predicted_anomaly"] = 0
-    result_df["sensor_type"] = None
-    result_df["anomaly_value"] = np.nan
-    result_df["anomaly_reason"] = None
-    result_df["expected_cause"] = "Multivariate deviation from historical baseline"
-    result_df["recommended_action"] = (
-        "Check blamed sensor for calibration drift or transient faults"
-    )
-    result_df["layer_used"] = "Layer 2: ML (Isolation Forest + SHAP)"
+def reading_from_row(row: pd.Series) -> dict:
+    """Build the L1 `reading` payload from a dataframe row."""
+    return {
+        "timestamp": str(row["timestamp"]),
+        "station_id": row["station_id"],
+        "temp_c": row["temp_c"],
+        "pressure_hpa": row["pressure_hpa"],
+        "humidity_pct": row["humidity_pct"],
+    }
 
-    batch_features = batch_df[features]
-    predictions = model.predict(batch_features)
 
-    anom_idx = batch_df.index[predictions == -1]
+def station_from_row(row: pd.Series) -> dict:
+    """Build the L1 `station` payload from a dataframe row."""
+    return {col: row[col] for col in STATION_COLS}
 
-    if not anom_idx.empty:
-        result_df.loc[anom_idx, "predicted_anomaly"] = 1
-        shap_values = explainer.shap_values(batch_df.loc[anom_idx, features])
 
-        for i, idx in enumerate(anom_idx):
-            row_shap_values = shap_values[i]
-            top_feature_idx = np.argmax(np.abs(row_shap_values))
-            blamed_feature = features[top_feature_idx]
+def run_static(parquet_path: Path, label: str) -> None:
+    print(f"[core] loading {label}: {parquet_path}")
+    df = pd.read_parquet(parquet_path)
+    df = df.sort_values("timestamp").reset_index(drop=True)
+    df = df.head(config.ROW_LIMIT)
+    readings = [reading_from_row(row) for _, row in df.iterrows()]
+    print(f"[core] {len(readings)} readings to evaluate (limit={config.ROW_LIMIT})")
 
-            result_df.loc[idx, "sensor_type"] = blamed_feature
-            result_df.loc[idx, "anomaly_value"] = batch_df.loc[idx, blamed_feature]
-            result_df.loc[idx, "anomaly_reason"] = (
-                f"SHAP flagged '{blamed_feature}' as primary driver of the multivariate anomaly."
+    # --- Layer 2: train once on the clean baseline -------------------------
+    clean_df = pd.read_parquet(config.CLEAN_PARQUET)
+    clean_readings = [reading_from_row(row) for _, row in clean_df.iterrows()]
+    print("[core] training L2 IsolationForest on clean baseline …")
+    model, explainer = train_ml_model(clean_readings)
+    print("[core] L2 model ready")
+
+    # Layer 2 runs on the whole batch.
+    l2_payloads = isolation_forest_shap(readings, model, explainer, FEATURES)
+
+    # --- Layer 1: per-row physics -----------------------------------------
+    l1_flags = []
+    for i, (row, reading) in enumerate(zip(df.iterrows(), readings)):
+        r = evaluate_physics(reading, station=station_from_row(row[1]))
+        l1_flags.append(r["predicted_anomaly"])
+        l2_anom = l2_payloads[i]["predicted_anomaly"]
+        if r["predicted_anomaly"] or l2_anom:
+            print(
+                f"  [{i}] {reading['station_id']} {reading['timestamp']} "
+                f"L1={r['predicted_anomaly']} L2={l2_anom} "
+                f"L1_sensors={r['affected_sensors']} "
+                f"L2_sensor={l2_payloads[i]['checks']['shap']['blamed_feature']}"
             )
 
-    return result_df
-
-
-# ── Model ────────────────────────────────────────────────────────────
-print("[core] loading Chronos-2 pipeline …")
-pipeline = Chronos2Pipeline.from_pretrained("amazon/chronos-2")
-print("[core] pipeline ready")
-
-# ── Sliding-window buffer ────────────────────────────────────────────
-# predict() needs N context rows + 1 actual row  →  21 total
-CONTEXT_LEN = 20
-BUFFER_SIZE = CONTEXT_LEN + 1
-buffer = deque(maxlen=BUFFER_SIZE)
-
-# ── Latency / throughput metrics ─────────────────────────────────────
-STATS_EVERY = 10  # print a summary every N predictions
-
-
-class Metrics:
-    def __init__(self):
-        self.last_arrival = None  # wall-clock time of previous reading
-        self.inference_times = []  # seconds per predict() call
-        self.arrival_gaps = []  # seconds between consecutive readings
-        self.drift_times = (
-            []
-        )  # arrival_gap − inference_time (negative = falling behind)
-        self.total_readings = 0
-        self.total_predictions = 0
-        self.dropped = 0  # readings that arrived while we were inferring
-
-    def record_arrival(self):
-        now = time.perf_counter()
-        if self.last_arrival is not None:
-            self.arrival_gaps.append(now - self.last_arrival)
-        self.last_arrival = now
-        self.total_readings += 1
-
-    def record_inference(self, elapsed: float):
-        self.inference_times.append(elapsed)
-        self.total_predictions += 1
-        # drift = how much longer inference took vs the arrival gap
-        if self.arrival_gaps:
-            gap = self.arrival_gaps[-1]
-            self.drift_times.append(elapsed - gap)
-
-    def should_report(self) -> bool:
-        return self.total_predictions > 0 and self.total_predictions % STATS_EVERY == 0
-
-    def report(self) -> str:
-        n = len(self.inference_times)
-        if n == 0:
-            return ""
-
-        inf = self.inference_times
-        avg_inf = sum(inf) / n
-        min_inf = min(inf)
-        max_inf = max(inf)
-
-        lines = [
-            f"┌──────────── scalability report  (after {self.total_predictions} predictions) ────────────┐",
-            f"│  readings received   : {self.total_readings}",
-            f"│  predictions made    : {self.total_predictions}",
-            f"│  inference  avg/min/max : {avg_inf*1000:7.1f} / {min_inf*1000:7.1f} / {max_inf*1000:7.1f}  ms",
-        ]
-
-        if self.arrival_gaps:
-            gaps = self.arrival_gaps
-            avg_gap = sum(gaps) / len(gaps)
-            lines.append(
-                f"│  arrival gap avg     : {avg_gap*1000:7.1f} ms   (stream interval)"
-            )
-            throughput = 1.0 / avg_inf if avg_inf > 0 else float("inf")
-            stream_rate = 1.0 / avg_gap if avg_gap > 0 else float("inf")
-            lines.append(
-                f"│  throughput          : {throughput:7.1f} pred/s   vs  stream {stream_rate:.1f} msg/s"
-            )
-
-            if self.drift_times:
-                avg_drift = sum(self.drift_times) / len(self.drift_times)
-                if avg_drift > 0:
-                    lines.append(
-                        f"│  ⚠ avg drift        : +{avg_drift*1000:.1f} ms   (inference SLOWER than stream)"
-                    )
-                else:
-                    lines.append(
-                        f"│  ✓ avg drift        : {avg_drift*1000:.1f} ms   (inference faster than stream)"
-                    )
-
-        lines.append("└" + "─" * 72 + "┘")
-        return "\n".join(lines)
-
-    def reset_window(self):
-        """Reset rolling stats but keep totals."""
-        self.inference_times.clear()
-        self.arrival_gaps.clear()
-        self.drift_times.clear()
-
-
-metrics = Metrics()
-
-
-def process_data(data: dict) -> dict | None:
-    """
-    Append one sensor reading to the sliding window.
-    Once the window is full (21 readings), build a DataFrame from the
-    last 21 readings and run the Chronos-2 forecast + anomaly check.
-
-    Returns the prediction payload when a forecast is made, else None.
-    """
-    metrics.record_arrival()
-    buffer.append(data["reading"])
-
-    if len(buffer) < BUFFER_SIZE:
-        print(f"[core] buffering … {len(buffer)}/{BUFFER_SIZE}")
-        return None
-
-    df = pd.DataFrame(list(buffer))
-
-    # Stream sends "id" — rename to match ml_code expectations
-    if "id" in df.columns and "station_id" not in df.columns:
-        df.rename(columns={"id": "station_id"}, inplace=True)
-
-    # Derive "hour" feature from timestamp (ML model was trained with it)
-    df["hour"] = pd.to_datetime(df["timestamp"]).dt.hour
-
-    t0 = time.perf_counter()
-
-    try:
-        ml_layer = isolation_forest_shap(
-            batch_df=df,
-            model=data["ml"]["isolation_forest"],
-            explainer=data["ml"]["explainer"],
-            features=data["ml"]["features"],
-        )
-        forecasting_layer = predict(pipeline=pipeline, df=df)
-    except Exception as e:
-        traceback.print_exc()
-        print(f"[core] prediction error: {e}")
-        return None
-    elapsed = time.perf_counter() - t0
-
-    metrics.record_inference(elapsed)
-
-    # Summarize ML layer results
-    ml_anomalies = ml_layer["predicted_anomaly"].sum()
-    ml_sensors = (
-        ml_layer.loc[ml_layer["predicted_anomaly"] == 1, "sensor_type"]
-        .unique()
-        .tolist()
-    )
-    fc_status = forecasting_layer["is_anomaly"]
-    fc_sensors = forecasting_layer["sensors"]
-
-    is_anomaly = ml_anomalies > 0 or fc_status
-    all_sensors = list(set(ml_sensors + fc_sensors))
-    status = "🔴 ANOMALY" if is_anomaly else "🟢 normal"
-    sensor_str = ", ".join(all_sensors) if all_sensors else "—"
+    l1_count = sum(l1_flags)
+    l2_count = sum(1 for p in l2_payloads if p["predicted_anomaly"])
+    combined = sum(1 for a, p in zip(l1_flags, l2_payloads) if a or p["predicted_anomaly"])
     print(
-        f"[core] {status}  sensors={sensor_str}  ml_hits={ml_anomalies} fc_layer={str(fc_sensors)}  inference={elapsed*1000:.1f}ms"
+        f"[core] done — L1 flagged {l1_count}/{len(readings)} rows, "
+        f"L2 flagged {l2_count}/{len(readings)} rows, combined {combined}"
     )
 
-    # Print scalability report periodically
-    if metrics.should_report():
-        print(metrics.report())
-        metrics.reset_window()
 
-
-# ── Shared: train ML model on clean baseline ─────────────────────────
-CLEAN_PARQUET = "../seeds/data/raw/aws_clean_baseline.parquet"
-EVAL_PARQUET = "../seeds/aws_evaluation_dataset.parquet"
-ML_FEATURES = ["temp_c", "pressure_hpa", "humidity_pct", "hour"]
-
-
-def _train_ml_model():
-    """Train IsolationForest on the clean baseline and return (model, explainer, features)."""
-    df = pd.read_parquet(CLEAN_PARQUET)
-    df["hour"] = pd.to_datetime(df["timestamp"]).dt.hour
-
-    model = IsolationForest(n_estimators=100, contamination=0.01, random_state=42)
-    print("[model] training IsolationForest on clean baseline …")
-    model.fit(df[ML_FEATURES])
-    print("[model] training complete")
-
-    explainer = shap.TreeExplainer(model)
-    print("[model] SHAP explainer ready")
-    return model, explainer, ML_FEATURES
-
-
-# ── Accuracy check ───────────────────────────────────────────────────
-def _confusion(y_true, y_pred):
-    """Return (TP, FP, TN, FN) from boolean/int arrays."""
-    tp = int(((y_true == 1) & (y_pred == 1)).sum())
-    fp = int(((y_true == 0) & (y_pred == 1)).sum())
-    tn = int(((y_true == 0) & (y_pred == 0)).sum())
-    fn = int(((y_true == 1) & (y_pred == 0)).sum())
-    return tp, fp, tn, fn
-
-
-def _print_metrics(name, tp, fp, tn, fn):
-    total = tp + fp + tn + fn
-    accuracy = (tp + tn) / total if total else 0
-    precision = tp / (tp + fp) if (tp + fp) else 0
-    recall = tp / (tp + fn) if (tp + fn) else 0
-    f1 = 2 * precision * recall / (precision + recall) if (precision + recall) else 0
-
-    print(f"\n┌─────────────── {name} ───────────────┐")
-    print(f"│  Total samples : {total}")
-    print(f"│  TP / FP       : {tp:>5} / {fp:<5}")
-    print(f"│  TN / FN       : {tn:>5} / {fn:<5}")
-    print(f"│  Accuracy      : {accuracy:.4f}")
-    print(f"│  Precision     : {precision:.4f}")
-    print(f"│  Recall        : {recall:.4f}")
-    print(f"│  F1 Score      : {f1:.4f}")
-    print(f"└{'─' * 42}┘")
-
-
-def run_accuracy_check():
+def run_l3_frozen_payloads(df: pd.DataFrame) -> list:
     """
-    Slide a window of BUFFER_SIZE over the evaluation dataset.
-    At each step, run both layers and compare predictions to ground truth.
+    Run L3 over the eval window: slide a window per station and check
+    the last reading for frozen sensors. Returns the L3 payload dicts
+    for each scored window (timestamp = window's last reading).
+    Deterministic + cheap, so no limit is needed.
     """
-    model, explainer, features = _train_ml_model()
+    from layers_v2.frozen import MIN_WINDOW_LEN, evaluate_frozen
 
-    print("\n[eval] loading evaluation dataset …")
-    df_eval = pd.read_parquet(EVAL_PARQUET)
-    df_eval = df_eval.sort_values("timestamp").reset_index(drop=True)
+    df = df.sort_values(["station_id", "timestamp"]).reset_index(drop=True)
+    payloads = []
+    for station in df["station_id"].unique():
+        sdf = df[df["station_id"] == station].reset_index(drop=True)
+        for i in range(len(sdf) - MIN_WINDOW_LEN):
+            window_readings = [
+                reading_from_row(row)
+                for _, row in sdf.iloc[i : i + MIN_WINDOW_LEN + 1].iterrows()
+            ]
+            payloads.append(evaluate_frozen(window_readings))
+    return payloads
 
-    # Rename "id" → "station_id" if needed
-    if "id" in df_eval.columns and "station_id" not in df_eval.columns:
-        df_eval.rename(columns={"id": "station_id"}, inplace=True)
 
-    df_eval["hour"] = pd.to_datetime(df_eval["timestamp"]).dt.hour
+def run_l4_forecast_payloads(pipeline, df: pd.DataFrame) -> list:
+    """
+    Run L4 over the eval window: slide a context window per station and
+    forecast the next reading. Returns the L4 payload dicts for each
+    scored window (capped by config.FORECAST_LIMIT).
+    """
+    from layers_v2.forecasting import forecast_reading
 
-    # Pick one station to evaluate sequentially (same as live ingestion)
-    stations = df_eval["station_id"].unique()
-    print(f"[eval] stations available: {list(stations)}")
-    station_id = stations[0]
-    df_station = df_eval[df_eval["station_id"] == station_id].reset_index(drop=True)
-    print(f"[eval] evaluating station '{station_id}' — {len(df_station)} rows")
+    df = df.sort_values(["station_id", "timestamp"]).reset_index(drop=True)
+    payloads = []
+    for station in df["station_id"].unique():
+        sdf = df[df["station_id"] == station].reset_index(drop=True)
+        for i in range(len(sdf) - FORECAST_CONTEXT - 1):
+            window_readings = [
+                reading_from_row(row)
+                for _, row in sdf.iloc[i : i + FORECAST_CONTEXT + 1].iterrows()
+            ]
+            payloads.append(
+                forecast_reading(pipeline, window_readings, n_context=FORECAST_CONTEXT)
+            )
+            if len(payloads) >= config.FORECAST_LIMIT:
+                return payloads
+    return payloads
 
-    # Drop rows with NaN in sensor columns (dropout anomalies)
-    sensor_cols = ["temp_c", "pressure_hpa", "humidity_pct"]
-    valid_mask = df_station[sensor_cols].notna().all(axis=1)
-    df_station = df_station[valid_mask].reset_index(drop=True)
-    print(f"[eval] after dropping NaN rows: {len(df_station)} rows")
 
-    n_windows = len(df_station) - BUFFER_SIZE
-    if n_windows <= 0:
-        print("[eval] not enough data for even one window")
+def test_layer(parquet_path: Path) -> None:
+    """
+    Test layer: run the full pipeline (L1-L6) on the injected evaluation
+    dataset and measure it against ALL three ground-truth axes:
+      1. Detection      — is_anomaly (does any layer / fusion flag it?)
+      2. Sensor type    — affected_sensor (do we blame the right sensor?)
+      3. Fault type     — anomaly_type (do we classify the fault right?)
+    Reporting is F2/precision-at-recall friendly (idea-pitch/02-thresholds.md):
+    the dataset is ~98% normal, so raw accuracy would be misleading.
+    """
+    print(f"[test] loading evaluation dataset: {parquet_path}")
+
+    clean_df = pd.read_parquet(config.CLEAN_PARQUET)
+    clean_readings = [reading_from_row(row) for _, row in clean_df.iterrows()]
+    print("[test] training L2 IsolationForest on clean baseline …")
+    model, explainer = train_ml_model(clean_readings)
+    print("[test] L2 model ready")
+
+    df = pd.read_parquet(parquet_path)
+    df = df.sort_values("timestamp").reset_index(drop=True)
+    df = df.head(config.TEST_ROW_LIMIT)
+    readings = [reading_from_row(row) for _, row in df.iterrows()]
+    print(f"[test] {len(readings)} readings (limit={config.TEST_ROW_LIMIT})")
+
+    gt = df["is_anomaly"].astype(int).to_numpy()
+
+    # --- Run every layer ----------------------------------------------------
+    # L2 ML (batch).
+    l2_payloads = isolation_forest_shap(readings, model, explainer, FEATURES)
+    l2_preds = np.array([1 if p["predicted_anomaly"] else 0 for p in l2_payloads])
+
+    # L2 gap (dropout) — deterministic, cheap.
+    from layers_v2.gap import detect_gaps
+
+    gap_payloads = detect_gaps(readings)
+    gap_preds = np.array([1 if p["predicted_anomaly"] else 0 for p in gap_payloads])
+
+    # L1 (per row).
+    l1_payloads = []
+    for reading, (_, row) in zip(readings, df.iterrows()):
+        r = evaluate_physics(reading, station=station_from_row(row))
+        l1_payloads.append(r)
+    l1_preds = np.array([1 if p["predicted_anomaly"] else 0 for p in l1_payloads])
+
+    # L3 (frozen) — deterministic, runs over every window.
+    print("[test] running L3 frozen checks …")
+    l3_payloads = run_l3_frozen_payloads(df)
+    l3_map = {(p["station_id"], p["timestamp"]): p for p in l3_payloads}
+    l3_preds = np.array(
+        [
+            1 if l3_map.get((row["station_id"], str(row["timestamp"])), {}).get("predicted_anomaly") else 0
+            for _, row in df.iterrows()
+        ]
+    )
+
+    # L4 (forecasting) — optional, needs Chronos-2.
+    l4_payloads = None
+    if config.RUN_FORECAST:
+        from chronos import Chronos2Pipeline
+
+        print("[test] loading Chronos-2 pipeline (first run downloads the model) …")
+        pipeline = Chronos2Pipeline.from_pretrained("amazon/chronos-2")
+        print("[test] pipeline ready — running L4 forecasts …")
+        l4_payloads = run_l4_forecast_payloads(pipeline, df)
+        print(f"[test] L4 scored {len(l4_payloads)} windows (limit={config.FORECAST_LIMIT})")
+    l4_map = (
+        {(p["station_id"], p["timestamp"]): p for p in l4_payloads}
+        if l4_payloads else {}
+    )
+    l4_preds = np.array(
+        [
+            1 if l4_map.get((row["station_id"], str(row["timestamp"])), {}).get("predicted_anomaly") else 0
+            for _, row in df.iterrows()
+        ]
+    )
+
+    # L5 (spatial context) — never flags; shows neighbour agreement.
+    from layers_v2.spatial import evaluate_spatial
+
+    stations_meta = {}
+    for _, row in df.iterrows():
+        stations_meta[row["station_id"]] = {
+            "lat": row["lat"], "lon": row["lon"], "elevation_m": row["elevation_m"],
+        }
+    l5_payloads = []
+    for ts, group in df.groupby("timestamp"):
+        snap_readings = [reading_from_row(row) for _, row in group.iterrows()]
+        l5_payloads.extend(evaluate_spatial(snap_readings, stations_meta))
+    l5_disagree = sum(
+        1 for p in l5_payloads
+        if p["checks"]["spatial"].get("temp_agree") is False
+        or p["checks"]["spatial"].get("pressure_agree") is False
+    )
+    print(f"[test] L5 spatial: {l5_disagree} rows where neighbours disagree (context for L6)")
+
+    # L6 fusion.
+    from layers_v2.fusion import fuse
+
+    fused_payloads = fuse(
+        l1=l1_payloads,
+        l2=l2_payloads,
+        l2_gap=gap_payloads,
+        l3=l3_payloads,
+        l4=l4_payloads,
+        l5=l5_payloads,
+    )
+    fused_map = {(p["station_id"], p["timestamp"]): p for p in fused_payloads}
+    fused_preds = np.array(
+        [
+            1 if fused_map.get((row["station_id"], str(row["timestamp"])), {}).get("predicted_anomaly") else 0
+            for _, row in df.iterrows()
+        ]
+    )
+
+    # --- 1) Detection report (per layer + fusion) ---------------------------
+    print("\n┌─────────── 1) Detection vs is_anomaly ───────────┐")
+    rows = [("L1 Physics", l1_preds), ("L2 Gap", gap_preds), ("L2 ML", l2_preds),
+            ("L3 Frozen", l3_preds)]
+    if l4_payloads:
+        rows.append(("L4 Forecast", l4_preds))
+    rows.append(("L6 Fusion", fused_preds))
+    for name, preds in rows:
+        tp = int(((preds == 1) & (gt == 1)).sum())
+        fp = int(((preds == 1) & (gt == 0)).sum())
+        fn = int(((preds == 0) & (gt == 1)).sum())
+        precision = tp / (tp + fp) if (tp + fp) else 0.0
+        recall = tp / (tp + fn) if (tp + fn) else 0.0
+        f2 = (5 * precision * recall) / (4 * precision + recall) if (4 * precision + recall) else 0.0
+        print(f"│ {name:<10} TP={tp:<4} FP={fp:<4} FN={fn:<4} "
+              f"prec={precision:.3f} rec={recall:.3f} F2={f2:.3f}")
+    print(f"└{'─' * 44}┘")
+
+    # --- 2) Sensor-type attribution (only on true anomalies) ----------------
+    # Ground truth affected_sensor may be a single sensor, a pair
+    # (temp_humidity), or all_sensors; compare the fused affected set.
+    print("\n┌─── 2) Sensor attribution vs affected_sensor (anomalies) ───┐")
+    _report_sensor_attribution(df, fused_map, gt)
+    print(f"└{'─' * 50}┘")
+
+    # --- 3) Fault-type classification (fused verdict vs anomaly_type) ------
+    print("\n┌──────── 3) Fault classification vs anomaly_type ────────┐")
+    _report_fault_classification(df, fused_map, gt)
+    print(f"└{'─' * 50}┘")
+
+    print(f"\n[test] done — {len(df)} rows, {int(gt.sum())} true anomalies in window")
+
+
+def _gt_sensor_set(affected_sensor: str) -> set:
+    """Ground-truth affected_sensor string -> set of sensor keys."""
+    mapping = {
+        "none": set(),
+        "temp_c": {"temp_c"},
+        "humidity_pct": {"humidity_pct"},
+        "pressure_hpa": {"pressure_hpa"},
+        "temp_humidity": {"temp_c", "humidity_pct"},
+        "all_sensors": {"temp_c", "pressure_hpa", "humidity_pct"},
+    }
+    return mapping.get(affected_sensor, set())
+
+
+def _report_sensor_attribution(df, fused_map, gt) -> None:
+    """Compare fused affected_sensors vs ground truth on true-anomaly rows."""
+    total = exact = overlap = 0
+    per_sensor = {}  # gt_sensor -> {total, exact}
+    for _, row in df[gt == 1].iterrows():
+        fused = fused_map.get((row["station_id"], str(row["timestamp"])))
+        if fused is None:
+            continue
+        gt_set = _gt_sensor_set(row["affected_sensor"])
+        if not gt_set:
+            continue
+        pred_set = set(fused.get("affected_sensors", []))
+        total += 1
+        hit = bool(gt_set & pred_set)
+        overlap += int(hit)
+        exact += int(gt_set == pred_set)
+        for s in gt_set:
+            d = per_sensor.setdefault(s, {"total": 0, "exact": 0})
+            d["total"] += 1
+            d["exact"] += int(s in pred_set)
+    if total == 0:
+        print("│  no scored anomaly rows with a sensor label")
+        return
+    print(f"│  scored anomaly rows : {total}")
+    print(f"│  sensor overlap hit  : {overlap} ({overlap/total:.3f})")
+    print(f"│  exact set match     : {exact} ({exact/total:.3f})")
+    for s, d in sorted(per_sensor.items()):
+        print(f"│  {s:<16} caught {d['exact']}/{d['total']} "
+              f"({d['exact']/d['total']:.3f})")
+
+
+# Expected fused fault_type per injected anomaly_type (idea-pitch/06).
+_EXPECTED_FAULT = {
+    "spike": {"ml_anomaly", "physics", "forecast_deviation"},
+    "gradual_drift": {"ml_anomaly", "forecast_deviation"},
+    "noise_burst": {"ml_anomaly"},
+    "barometric_altitude_inconsistency": {"physics"},
+    "frozen_sensor": {"frozen_sensor"},
+    "cross_sensor_decoupling": {"ml_anomaly"},
+    "dropout_power_cut": {"gap"},
+    "linear_dampened": {"frozen_sensor"},
+}
+
+
+def _report_fault_classification(df, fused_map, gt) -> None:
+    """Compare fused fault_type vs expected set per anomaly_type."""
+    total = correct = 0
+    per_type = {}
+    for _, row in df[gt == 1].iterrows():
+        fused = fused_map.get((row["station_id"], str(row["timestamp"])))
+        if fused is None:
+            continue
+        atype = row["anomaly_type"]
+        expected = _EXPECTED_FAULT.get(atype, set())
+        if not expected:
+            continue
+        fault_type = fused["checks"]["fusion"].get("fault_type")
+        d = per_type.setdefault(atype, {"total": 0, "correct": 0})
+        d["total"] += 1
+        d["correct"] += int(fault_type in expected)
+        total += 1
+        correct += int(fault_type in expected)
+    if total == 0:
+        print("│  no scored anomaly rows with a classifiable type")
+        return
+    print(f"│  classified rows : {total} | correct fault_type: {correct} ({correct/total:.3f})")
+    for atype, d in sorted(per_type.items()):
+        print(f"│  {atype:<38} {d['correct']}/{d['total']} "
+              f"({d['correct']/d['total']:.3f})")
+
+
+def main() -> None:
+    # Test layer first if enabled (it needs the eval labels).
+    if config.RUN_TEST:
+        test_layer(config.EVAL_PARQUET)
         return
 
-    # Storage for per-row predictions
-    gt_labels = []          # ground truth: 1 = anomaly, 0 = normal
-    ml_preds = []           # ML layer prediction for the last row
-    fc_preds = []           # forecasting layer prediction for the last row
-    combined_preds = []     # either layer flagged it
-
-    print(f"[eval] sliding {n_windows} windows (buffer={BUFFER_SIZE}) …\n")
-
-    t_start = time.perf_counter()
-    for i in range(n_windows):
-        window = df_station.iloc[i : i + BUFFER_SIZE].copy()
-        window = window.reset_index(drop=True)
-
-        # Ground truth for the last (newest) row
-        last_row = window.iloc[-1]
-        gt = int(last_row.get("is_anomaly", 0))
-        gt_labels.append(gt)
-
-        # ── ML layer ─────────────────────────────────────────────────
-        try:
-            ml_result = isolation_forest_shap(
-                batch_df=window, model=model, explainer=explainer, features=features
-            )
-            # Check if the last row was flagged
-            ml_flag = int(ml_result.iloc[-1]["predicted_anomaly"])
-        except Exception:
-            ml_flag = 0
-        ml_preds.append(ml_flag)
-
-        # ── Forecasting layer ────────────────────────────────────────
-        try:
-            fc_result = predict(pipeline=pipeline, df=window)
-            fc_flag = 1 if fc_result["is_anomaly"] else 0
-        except Exception:
-            fc_flag = 0
-        fc_preds.append(fc_flag)
-
-        # ── Combined ─────────────────────────────────────────────────
-        combined_preds.append(1 if (ml_flag or fc_flag) else 0)
-
-        # Progress
-        if (i + 1) % 50 == 0 or i == n_windows - 1:
-            elapsed = time.perf_counter() - t_start
-            rate = (i + 1) / elapsed
-            print(f"  [{i+1}/{n_windows}]  {rate:.1f} windows/s  "
-                  f"gt_anom={sum(gt_labels)}  ml_det={sum(ml_preds)}  fc_det={sum(fc_preds)}")
-
-    # ── Results ──────────────────────────────────────────────────────
-    gt = np.array(gt_labels)
-    ml = np.array(ml_preds)
-    fc = np.array(fc_preds)
-    cb = np.array(combined_preds)
-
-    _print_metrics("ML Layer (IsolationForest + SHAP)", *_confusion(gt, ml))
-    _print_metrics("Forecasting Layer (Chronos-2)", *_confusion(gt, fc))
-    _print_metrics("Combined (ML ∪ Forecasting)", *_confusion(gt, cb))
-
-    total_time = time.perf_counter() - t_start
-    print(f"\n[eval] done — {n_windows} windows in {total_time:.1f}s "
-          f"({n_windows/total_time:.1f} windows/s)")
-
-
-# ── Static ingestion (quick test on clean data) ──────────────────────
-def static_ingestion():
-    model, explainer, features = _train_ml_model()
-    df = pd.read_parquet(CLEAN_PARQUET)
-    df = df.sort_values("timestamp").reset_index(drop=True)
-
-    # Pick first station
-    station_id = df["station_id"].unique()[0]
-    df_station = df[df["station_id"] == station_id].reset_index(drop=True)
-
-    n_rows = min(1000, len(df_station))
-    print(f"[static] running {n_rows} rows from station '{station_id}' …")
-
-    buffer.clear()
-    for i in range(n_rows):
-        row = df_station.iloc[i].to_dict()
-        data = {
-            "reading": row,
-            "ml": {
-                "isolation_forest": model,
-                "explainer": explainer,
-                "features": features,
-            },
-        }
-        process_data(data)
-
-
-# ── Stream ingestion ─────────────────────────────────────────────────
-def start_ingestion():
-    model, explainer, features = _train_ml_model()
-
-    stream_url = f"{config.SENSOR_URL}/v1/sensor/injected/HYD001"
-    print(f"[core] connecting to {stream_url}")
-
-    try:
-        with requests.get(stream_url, stream=True) as response:
-            response.raise_for_status()
-            print("[core] stream connected ✓")
-
-            for line in response.iter_lines():
-                if not line:
-                    continue
-
-                decoded_line = line.decode("utf-8").strip()
-                if not decoded_line:
-                    continue
-
-                try:
-                    reading = json.loads(decoded_line)
-                    data = {
-                        "reading": reading,
-                        "ml": {
-                            "isolation_forest": model,
-                            "explainer": explainer,
-                            "features": features,
-                        },
-                    }
-                    process_data(data)
-                except json.JSONDecodeError:
-                    print(f"[core] skipped malformed JSON: {decoded_line[:80]}")
-
-    except requests.exceptions.RequestException as e:
-        print(f"[core] stream connection failed: {e}")
-
-
-# ── CLI ──────────────────────────────────────────────────────────────
-if __name__ == "__main__":
-    import argparse
-
-    parser = argparse.ArgumentParser(description="Sky-Guard-AI Core Engine")
-    parser.add_argument(
-        "mode",
-        nargs="?",
-        default="stream",
-        choices=["stream", "static", "accuracy"],
-        help="stream = live sensor stream (default), "
-             "static = offline test on clean data, "
-             "accuracy = evaluate both layers on clean + eval parquets",
-    )
-    args = parser.parse_args()
-
-    if args.mode == "accuracy":
-        run_accuracy_check()
-    elif args.mode == "static":
-        static_ingestion()
+    if config.DATASET == "eval":
+        run_static(config.EVAL_PARQUET, "injected evaluation dataset")
     else:
-        start_ingestion()
+        run_static(config.CLEAN_PARQUET, "clean baseline")
 
+
+if __name__ == "__main__":
+    main()
