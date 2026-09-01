@@ -7,13 +7,13 @@ Compares each station's readings against its geographic neighbors at the
 SAME timestamp, using robust statistics (median/MAD) so one bad neighbor
 doesn't poison the comparison for everyone else.
 
-Depends on Layer 1's P_MSL (elevation-corrected pressure)  do not
+Depends on Layer 1's P_MSL (elevation-corrected pressure) — do not
 recompute pressure correction here, reuse L1's output directly, same
 formula, same constants (see physics.py msl_pressure()).
 
 Structural note: unlike L1, which processes each station independently
 row by row, L5 needs ALL stations' readings at a given timestamp
-simultaneously to find neighbors and compare  so layer5_spatial() takes
+simultaneously to find neighbors and compare — so layer5_spatial() takes
 the full multi-station dataframe, not a per-station slice.
 """
 
@@ -37,7 +37,7 @@ REFERENCE_ELEVATION_M = 0.0
 
 
 # ---------------------------------------------------------------------------
-# Real station network  matches seeds/src/stations.py. Distances below
+# Real station network — matches seeds/src/stations.py. Distances below
 # were computed from this exact list, so the sparse/dense split reflects
 # your actual data, not a hypothetical.
 #
@@ -47,7 +47,7 @@ REFERENCE_ELEVATION_M = 0.0
 #   SHI001 (Shimla) nearest other station: DEL001/DEL002, ~340 km away
 #   SXR001 (Srinagar) nearest other station: SHI001, ~370 km away
 # Both SHI001 and SXR001 sit OUTSIDE the 250km radius from every other
-# station in this 16-station list  they will always hit the
+# station in this 16-station list — they will always hit the
 # insufficient-neighbors fallback path. This is real, not a bug: it
 # mirrors IMD's actual network, where mountain regions (e.g. only 10 AWS
 # in all of Ladakh) are genuinely sparse. L5 must handle this honestly,
