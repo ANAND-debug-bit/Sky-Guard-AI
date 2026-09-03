@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SkyGuard AI · dashboard</title>
+<style>
+  :root {
+    --bg: #12161d;
+    --panel: #1b212b;
+    --rule: #2a3340;
+    --text: #d7dde5;
+    --dim: #8a96a5;
+    --green: #3fbf7f;
+    --red: #e0574f;
+    --amber: #d9a441;
+    --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--sans);
+    padding: 20px;
+  }
+  h1 { font-size: 18px; margin: 0 0 4px; }
+  .sub { color: var(--dim); font-size: 12px; margin-bottom: 16px; }
+  .status {
+    display: inline-block; padding: 3px 10px; border-radius: 999px;
+    font-size: 12px; margin-bottom: 16px;
+  }
+  .status.up { background: rgba(63,191,127,.15); color: var(--green); }
+  .status.down { background: rgba(224,87,79,.15); color: var(--red); }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(420px, 1fr)); gap: 16px; }
+  .panel { background: var(--panel); border: 1px solid var(--rule); border-radius: 8px; padding: 14px; }
+  .panel h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .06em; color: var(--dim); margin: 0 0 10px; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { text-align: left; padding: 5px 6px; border-bottom: 1px solid var(--rule); white-space: nowrap; }
+  th { color: var(--dim); font-weight: 500; font-size: 11px; text-transform: uppercase; }
+  td.num { font-family: var(--mono); font-size: 12px; }
+  .anom td { background: rgba(224,87,79,.08); }
+  .badge {
+    display: inline-block; padding: 1px 8px; border-radius: 4px; font-size: 11px;
+  }
+  .badge.yes { background: var(--red); color: #fff; }
+  .badge.no { background: var(--rule); color: var(--dim); }
+  #stream {
+    font-family: var(--mono); font-size: 12px; line-height: 1.6;
+    max-height: 380px; overflow-y: auto; white-space: pre-wrap; word-break: break-all;
+  }
+  #stream .hit { color: var(--red); }
+  #stream .miss { color: var(--dim); }
+  .stat { font-family: var(--mono); font-size: 14px; }
+</style>
+</head>
+<body>
+  <h1>SkyGuard AI</h1>
+  <div class="sub">Real-time data quality engine · stations across India</div>
+  <span id="statusBadge" class="status down">connecting…</span>
+  <div class="sub">buffered <span id="buffered" class="stat">0</span> rows ·
+    <span id="stationCount" class="stat">0</span> stations ·
+    anomalies in buffer <span id="anomalyCount" class="stat">0</span></div>
+
+  <div class="grid">
+    <div class="panel">
+      <h2>Latest readings</h2>
+      <table>
+        <thead><tr><th>station</th><th>temp °C</th><th>pressure</th><th>humidity</th><th>anomaly</th></tr></thead>
+        <tbody id="latestBody"></tbody>
+      </table>
+    </div>
+
+    <div class="panel">
+      <h2>Recent anomalies</h2>
+      <table>
+        <thead><tr><th>time</th><th>station</th><th>type</th><th>sensor</th></tr></thead>
+        <tbody id="anomBody"></tbody>
+      </table>
+      <div style="color:var(--dim);font-size:12px;margin-top:6px" id="anomEmpty"></div>
+    </div>
+  </div>
+
+  <div class="panel" style="margin-top:16px">
+    <h2>Live stream <span style="float:right;font-size:11px" id="streamCount"></span></h2>
+    <div id="stream"></div>
+  </div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+
+// ---- helpers ------------------------------------------------------------
+function esc(v) {
+  return String(v ?? "").replace(/[&<>"']/g, c =>
+    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+function num(v) { return v === null || v === undefined ? "—" : esc(v); }
+
+async function refresh() {
+  try {
+    const health = await fetch("/health").then(r => r.json());
+    $("statusBadge").className = "status up";
+    $("statusBadge").textContent = "backend up";
+    $("buffered").textContent = health.buffered_rows;
+    $("stationCount").textContent = health.stations.length;
+  } catch {
+    $("statusBadge").className = "status down";
+    $("statusBadge").textContent = "backend down";
+    return;
+  }
+
+  try {
+    const latest = await fetch("/readings/latest").then(r => r.json());
+    $("latestBody").innerHTML = latest.rows.map(r => `
+      <tr class="${r.is_anomaly ? "anom" : ""}">
+        <td>${esc(r.id)}</td>
+        <td class="num">${num(r.temp_c)}</td>
+        <td class="num">${num(r.pressure_hpa)}</td>
+        <td class="num">${num(r.humidity_pct)}</td>
+        <td><span class="badge ${r.is_anomaly ? "yes" : "no"}">${r.is_anomaly ? "YES" : "no"}</span></td>
+      </tr>`).join("");
+  } catch {}
+
+  try {
+    const anom = await fetch("/anomalies?limit=50").then(r => r.json());
+    $("anomalyCount").textContent = anom.count;
+    $("anomBody").innerHTML = anom.rows.map(r => `
+      <tr class="anom">
+        <td class="num">${esc(r.timestamp)}</td>
+        <td>${esc(r.id)}</td>
+        <td>${esc(r.anomaly_type)}</td>
+        <td>${esc(r.affected_sensor)}</td>
+      </tr>`).join("");
+    $("anomEmpty").textContent = anom.count ? "" : "no anomalies in buffer yet — stream runs ~1 row/sec";
+  } catch {}
+}
+
+// ---- live SSE stream -----------------------------------------------------
+let streamRows = 0;
+const streamEl = $("stream");
+const source = new EventSource("/stream");
+source.onmessage = (ev) => {
+  streamRows++;
+  $("streamCount").textContent = `${streamRows} events`;
+  const r = JSON.parse(ev.data);
+  const hit = r.is_anomaly;
+  const line = `${r.id}\t${r.timestamp}\t${num(r.temp_c)}°C\t${num(r.pressure_hpa)}hPa\t${num(r.humidity_pct)}%\t${hit ? "ANOMALY " + r.anomaly_type : "normal"}`;
+  const div = document.createElement("div");
+  div.className = hit ? "hit" : "miss";
+  div.textContent = line;
+  streamEl.prepend(div);
+  while (streamEl.children.length > 200) streamEl.removeChild(streamEl.lastChild);
+};
+source.onerror = () => { $("streamCount").textContent = "stream disconnected"; };
+
+refresh();
+setInterval(refresh, 3000);
+</script>
+</body>
+</html>
