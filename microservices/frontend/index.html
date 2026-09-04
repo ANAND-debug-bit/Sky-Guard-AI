@@ -1,161 +1,1536 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>SkyGuard AI · dashboard</title>
-<style>
-  :root {
-    --bg: #12161d;
-    --panel: #1b212b;
-    --rule: #2a3340;
-    --text: #d7dde5;
-    --dim: #8a96a5;
-    --green: #3fbf7f;
-    --red: #e0574f;
-    --amber: #d9a441;
-    --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
-    --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
-  }
-  * { box-sizing: border-box; }
-  body {
-    margin: 0;
-    background: var(--bg);
-    color: var(--text);
-    font-family: var(--sans);
-    padding: 20px;
-  }
-  h1 { font-size: 18px; margin: 0 0 4px; }
-  .sub { color: var(--dim); font-size: 12px; margin-bottom: 16px; }
-  .status {
-    display: inline-block; padding: 3px 10px; border-radius: 999px;
-    font-size: 12px; margin-bottom: 16px;
-  }
-  .status.up { background: rgba(63,191,127,.15); color: var(--green); }
-  .status.down { background: rgba(224,87,79,.15); color: var(--red); }
-  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(420px, 1fr)); gap: 16px; }
-  .panel { background: var(--panel); border: 1px solid var(--rule); border-radius: 8px; padding: 14px; }
-  .panel h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .06em; color: var(--dim); margin: 0 0 10px; }
-  table { width: 100%; border-collapse: collapse; font-size: 13px; }
-  th, td { text-align: left; padding: 5px 6px; border-bottom: 1px solid var(--rule); white-space: nowrap; }
-  th { color: var(--dim); font-weight: 500; font-size: 11px; text-transform: uppercase; }
-  td.num { font-family: var(--mono); font-size: 12px; }
-  .anom td { background: rgba(224,87,79,.08); }
-  .badge {
-    display: inline-block; padding: 1px 8px; border-radius: 4px; font-size: 11px;
-  }
-  .badge.yes { background: var(--red); color: #fff; }
-  .badge.no { background: var(--rule); color: var(--dim); }
-  #stream {
-    font-family: var(--mono); font-size: 12px; line-height: 1.6;
-    max-height: 380px; overflow-y: auto; white-space: pre-wrap; word-break: break-all;
-  }
-  #stream .hit { color: var(--red); }
-  #stream .miss { color: var(--dim); }
-  .stat { font-family: var(--mono); font-size: 14px; }
-</style>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>SkyGuard AI · AWS quality-control console</title>
+    <style>
+        /* SkyGuard AI Instrumentation Console */
+        :root {
+            color-scheme: dark;
+            --ground: #1B2430;
+            --ground-2: #222D3B;
+            --ground-3: #161D27;
+            --panel: #F2EDE1;
+            --panel-2: #E6DFCE;
+            --ink: #14181E;
+            --prussian: #1D4E6F;
+            --verdigris: #2E7D6B;
+            --amber: #C08A2E;
+            --vermilion: #B2401F;
+            --indigo: #5B4B8A;
+            --red-alert: #FF3B30;
+            --dim: #8A97A8;
+            --rule: #31404F;
+            --mono: ui-monospace, "SF Mono", "Cascadia Mono", Menlo, Consolas, "Liberation Mono", monospace;
+            --sans: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
+        }
+
+        * {
+            box-sizing: border-box;
+        }
+
+        html,
+        body {
+            height: 100%;
+        }
+
+        body {
+            margin: 0;
+            background: var(--ground);
+            color: var(--panel);
+            font-family: var(--mono);
+            font-size: 13px;
+            line-height: 1.45;
+            -webkit-font-smoothing: antialiased;
+            overflow: hidden;
+        }
+
+        /* ---- chassis grid ---- */
+        .shell {
+            display: grid;
+            grid-template-rows: auto 1fr auto;
+            height: 100vh;
+            overflow: hidden;
+        }
+
+        .bay {
+            display: grid;
+            grid-template-columns: 340px 1fr 360px;
+            gap: 1px;
+            background: var(--rule);
+            min-height: 0;
+            transition: grid-template-columns 0.25s cubic-bezier(0.2, 0, 0, 1);
+        }
+
+        /* When left station list is collapsed, center panel gets full 1fr space next to 360px dossier */
+        .bay.collapsed-left {
+            grid-template-columns: 1fr 360px;
+        }
+
+        .bay>section {
+            background: var(--ground);
+            min-height: 0;
+            overflow: auto;
+            position: relative;
+        }
+
+        .bay.collapsed-left>section#station-panel {
+            display: none !important;
+        }
+
+        /* ---- header ---- */
+        .top {
+            display: flex;
+            align-items: center;
+            gap: 16px;
+            flex-wrap: wrap;
+            padding: 10px 18px;
+            border-bottom: 1px solid var(--rule);
+            background: var(--ground-2);
+            z-index: 10;
+        }
+
+        .wordmark {
+            font-size: 19px;
+            font-weight: 700;
+            letter-spacing: .16em;
+            margin: 0;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .wordmark span {
+            color: var(--verdigris);
+        }
+
+        .tagline {
+            font-family: var(--sans);
+            color: var(--dim);
+            font-size: 12px;
+        }
+
+        .btn-switch {
+            background: #243447;
+            border: 1px solid #41556C;
+            color: #E2EAF2;
+            font-family: var(--mono);
+            font-size: 11.5px;
+            padding: 5px 12px;
+            border-radius: 4px;
+            cursor: pointer;
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            transition: all 0.2s ease;
+        }
+
+        .btn-switch:hover {
+            background: #2E435C;
+            border-color: var(--verdigris);
+            color: #FFF;
+        }
+
+        .btn-switch b {
+            color: var(--verdigris);
+        }
+
+        .vitals {
+            margin-left: auto;
+            display: flex;
+            gap: 16px;
+            font-size: 11px;
+            color: var(--dim);
+            flex-wrap: wrap;
+        }
+
+        .vitals b {
+            color: var(--panel);
+            font-weight: 600;
+        }
+
+        /* ---- shared typography ---- */
+        .eyebrow {
+            font-size: 10px;
+            letter-spacing: .22em;
+            text-transform: uppercase;
+            color: var(--dim);
+            padding: 12px 16px 8px;
+            display: flex;
+            justify-content: space-between;
+            align-items: baseline;
+        }
+
+        .eyebrow em {
+            font-style: normal;
+            color: var(--verdigris);
+            letter-spacing: .04em;
+        }
+
+        .hint {
+            font-family: var(--sans);
+            font-size: 11.5px;
+            color: var(--dim);
+            padding: 0 16px 12px;
+            margin: 0;
+        }
+
+        /* ---- left: glyph grid ---- */
+        .grid {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 6px;
+            padding: 0 12px 14px;
+        }
+
+        .cell {
+            background: var(--ground-2);
+            border: 1px solid var(--rule);
+            border-radius: 2px;
+            padding: 8px 6px 6px;
+            cursor: pointer;
+            position: relative;
+            color: inherit;
+            font-family: inherit;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 4px;
+            transition: background .12s, border-color .12s;
+        }
+
+        .cell:hover {
+            background: #2A3644;
+            border-color: #4A5E73;
+        }
+
+        .cell[aria-pressed="true"] {
+            border-color: var(--panel);
+            background: #2D3B4C;
+        }
+
+        .cell canvas {
+            display: block;
+            width: 84px;
+            height: 84px;
+        }
+
+        .cell .sid {
+            font-size: 9.5px;
+            letter-spacing: .06em;
+            color: var(--dim);
+        }
+
+        .cell[data-alert="1"] .sid {
+            color: var(--vermilion);
+            font-weight: 700;
+        }
+
+        .legend {
+            border-top: 1px solid var(--rule);
+            padding: 12px 16px;
+            display: flex;
+            flex-wrap: wrap;
+            gap: 6px 14px;
+            font-size: 10.5px;
+            color: var(--dim);
+        }
+
+        .legend i {
+            display: inline-block;
+            width: 9px;
+            height: 9px;
+            border-radius: 50%;
+            margin-right: 5px;
+            vertical-align: -1px;
+        }
+
+        /* ---- centre: instrument faces ---- */
+        .face-head {
+            padding: 12px 20px 8px;
+            border-bottom: 1px solid var(--rule);
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            flex-wrap: wrap;
+            gap: 10px;
+            background: var(--ground-2);
+        }
+
+        .face-head h2 {
+            margin: 0;
+            font-size: 17px;
+            letter-spacing: .05em;
+        }
+
+        .face-head p {
+            margin: 3px 0 0;
+            font-family: var(--sans);
+            font-size: 12px;
+            color: var(--dim);
+        }
+
+        .face-actions {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .btn-switch-alt {
+            background: #1B2633;
+            border: 1px solid #3F5267;
+            color: #C2D4E5;
+            font-family: var(--mono);
+            font-size: 11px;
+            padding: 4px 10px;
+            border-radius: 3px;
+            cursor: pointer;
+            transition: all 0.2s ease;
+        }
+
+        .btn-switch-alt:hover {
+            border-color: var(--verdigris);
+            color: #FFF;
+        }
+
+        .pin-badge {
+            background: rgba(255, 59, 48, 0.18);
+            border: 1px solid #FF3B30;
+            color: #FFA39E;
+            padding: 3px 8px;
+            border-radius: 3px;
+            font-size: 11px;
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        .btn-clear-pin {
+            background: transparent;
+            border: none;
+            color: #FFA39E;
+            font-weight: 700;
+            cursor: pointer;
+            padding: 0 2px;
+        }
+
+        .traces {
+            padding: 14px 20px 20px;
+            display: flex;
+            flex-direction: column;
+            gap: 16px;
+            min-width: 0;
+            width: 100%;
+        }
+
+        /* Parallel trace pair layout */
+        .trace-row {
+            display: grid;
+            grid-template-columns: 1.15fr 0.85fr;
+            gap: 12px;
+            width: 100%;
+            min-width: 0;
+        }
+
+        @media (max-width: 1080px) {
+            .trace-row {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        .trace {
+            background: var(--panel);
+            border-radius: 2px;
+            padding: 8px 12px 6px;
+            color: var(--ink);
+            display: flex;
+            flex-direction: column;
+            box-shadow: 0 2px 6px rgba(0, 0, 0, 0.25);
+            min-width: 0;
+            width: 100%;
+        }
+
+        .trace-health {
+            background: #EAE3D2;
+            border-left: 3px solid var(--verdigris);
+        }
+
+        .trace header {
+            display: flex;
+            justify-content: space-between;
+            align-items: baseline;
+            font-size: 10px;
+            letter-spacing: .16em;
+            text-transform: uppercase;
+            color: var(--prussian);
+            margin-bottom: 4px;
+        }
+
+        .trace .now {
+            font-size: 14px;
+            letter-spacing: 0;
+            font-weight: 700;
+            color: var(--ink);
+        }
+
+        .trace .now u {
+            text-decoration: none;
+            font-size: 11px;
+            font-weight: 400;
+            color: #5d6570;
+        }
+
+        .health-now {
+            color: var(--verdigris) !important;
+            font-weight: 700;
+        }
+
+        .health-now.warn {
+            color: var(--amber) !important;
+        }
+
+        .health-now.crit {
+            color: var(--vermilion) !important;
+        }
+
+        .trace canvas {
+            display: block;
+            width: 100%;
+            height: 96px;
+        }
+
+        .trace footer {
+            font-family: var(--sans);
+            font-size: 11px;
+            color: #5d6570;
+            padding: 4px 0 2px;
+            min-height: 18px;
+            line-height: 1.35;
+        }
+
+        .qcpill {
+            font-family: var(--mono);
+            font-size: 10px;
+            letter-spacing: .1em;
+            padding: 1px 6px;
+            border-radius: 2px;
+            color: #fff;
+            font-weight: 700;
+        }
+
+        /* ---- right: the dossier ---- */
+        .why {
+            padding: 0 16px 18px;
+        }
+
+        .cause {
+            font-size: 16px;
+            letter-spacing: .06em;
+            font-weight: 700;
+            margin: 0 0 2px;
+        }
+
+        .conf {
+            font-size: 11px;
+            color: var(--dim);
+            margin: 0 0 14px;
+        }
+
+        .prose {
+            font-family: var(--sans);
+            font-size: 12.5px;
+            line-height: 1.55;
+            background: var(--ground-2);
+            border-left: 2px solid var(--verdigris);
+            padding: 10px 12px;
+            margin: 0 0 16px;
+            color: #D7DEE7;
+        }
+
+        .fam {
+            display: grid;
+            grid-template-columns: 86px 1fr 48px;
+            gap: 6px;
+            align-items: center;
+            font-size: 10.5px;
+            margin-bottom: 5px;
+        }
+
+        .fam span {
+            color: var(--dim);
+            text-align: right;
+            letter-spacing: .04em;
+        }
+
+        .fam .bar {
+            height: 9px;
+            background: #2A3644;
+            position: relative;
+            border-radius: 1px;
+        }
+
+        .fam .bar i {
+            position: absolute;
+            top: 0;
+            bottom: 0;
+            left: 50%;
+            border-radius: 1px;
+        }
+
+        .fam b {
+            font-weight: 600;
+            font-size: 10px;
+        }
+
+        .contrast {
+            margin-top: 16px;
+            font-family: var(--sans);
+            font-size: 12px;
+            color: #D7DEE7;
+        }
+
+        .contrast table {
+            width: 100%;
+            border-collapse: collapse;
+            font-family: var(--mono);
+            font-size: 10.5px;
+            margin-top: 6px;
+        }
+
+        .contrast td {
+            padding: 2px 0;
+            border-bottom: 1px solid var(--rule);
+            color: var(--dim);
+        }
+
+        .contrast td:last-child {
+            text-align: right;
+            color: var(--panel);
+        }
+
+        .empty {
+            font-family: var(--sans);
+            color: var(--dim);
+            font-size: 12.5px;
+            padding: 0 16px;
+        }
+
+        /* ---- bottom resizable ticker ---- */
+        .ticker {
+            border-top: 1px solid var(--rule);
+            background: var(--ground-2);
+            position: relative;
+            display: flex;
+            flex-direction: column;
+            height: 140px;
+            min-height: 54px;
+            max-height: 480px;
+            z-index: 20;
+        }
+
+        .ticker-resizer {
+            height: 6px;
+            cursor: ns-resize;
+            background: transparent;
+            position: absolute;
+            top: -3px;
+            left: 0;
+            right: 0;
+            z-index: 30;
+            transition: background 0.15s ease;
+        }
+
+        .ticker-resizer:hover,
+        .ticker-resizer.dragging {
+            background: var(--verdigris);
+        }
+
+        .ticker-header {
+            padding: 6px 18px 4px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+            background: var(--ground-3);
+        }
+
+        .ticker-slider-wrap {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 11px;
+            color: var(--dim);
+        }
+
+        .log-slider {
+            -webkit-appearance: none;
+            appearance: none;
+            width: 110px;
+            height: 4px;
+            background: #3A4B5E;
+            border-radius: 2px;
+            outline: none;
+            cursor: pointer;
+        }
+
+        .log-slider::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            appearance: none;
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            background: var(--verdigris);
+            cursor: pointer;
+        }
+
+        .btn-mini {
+            background: #222E3D;
+            border: 1px solid #3F5267;
+            color: #C2D4E5;
+            font-family: var(--mono);
+            font-size: 10px;
+            padding: 2px 7px;
+            border-radius: 3px;
+            cursor: pointer;
+        }
+
+        .btn-mini:hover {
+            border-color: var(--verdigris);
+            color: #FFF;
+        }
+
+        .ticker-body {
+            flex: 1;
+            overflow: auto;
+            padding: 4px 18px 8px;
+        }
+
+        .ticker table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 11px;
+        }
+
+        .ticker tr {
+            cursor: pointer;
+            transition: background 0.12s ease;
+        }
+
+        .ticker tr:hover {
+            background: rgba(255, 255, 255, 0.06);
+        }
+
+        .ticker tr.pinned-row {
+            background: rgba(255, 59, 48, 0.15) !important;
+            border-left: 3px solid #FF3B30;
+        }
+
+        .ticker td {
+            padding: 4px 10px 4px 0;
+            white-space: nowrap;
+            color: var(--dim);
+        }
+
+        .ticker td.sev {
+            font-weight: 700;
+            letter-spacing: .1em;
+        }
+
+        .ticker td.msg {
+            font-family: var(--sans);
+            white-space: normal;
+            color: #C9D3DE;
+        }
+
+        .ticker tr.fresh {
+            animation: slide .45s ease-out;
+        }
+
+        @keyframes slide {
+            from {
+                opacity: 0;
+                transform: translateY(-5px);
+            }
+
+            to {
+                opacity: 1;
+            }
+        }
+
+        .sweep {
+            animation: sweep 1s ease-out;
+        }
+
+        @keyframes sweep {
+            0% {
+                filter: brightness(2.1);
+            }
+
+            100% {
+                filter: none;
+            }
+        }
+
+        @media (max-width:1180px) {
+            .bay {
+                grid-template-columns: 1fr;
+                grid-template-rows: auto auto auto;
+            }
+            .bay.collapsed-left {
+                grid-template-columns: 1fr;
+                grid-template-rows: auto auto;
+            }
+        }
+    </style>
 </head>
+
 <body>
-  <h1>SkyGuard AI</h1>
-  <div class="sub">Real-time data quality engine · stations across India</div>
-  <span id="statusBadge" class="status down">connecting…</span>
-  <div class="sub">buffered <span id="buffered" class="stat">0</span> rows ·
-    <span id="stationCount" class="stat">0</span> stations ·
-    anomalies in buffer <span id="anomalyCount" class="stat">0</span></div>
+    <div class="shell">
 
-  <div class="grid">
-    <div class="panel">
-      <h2>Latest readings</h2>
-      <table>
-        <thead><tr><th>station</th><th>temp °C</th><th>pressure</th><th>humidity</th><th>anomaly</th></tr></thead>
-        <tbody id="latestBody"></tbody>
-      </table>
+        <!-- ---------- header ---------- -->
+        <header class="top">
+            <h1 class="wordmark">SKY<span>GUARD</span></h1>
+            <span class="tagline">Automatic Weather Station quality control &mdash; live</span>
+            <button id="btn-switch-station" class="btn-switch" title="Toggle Stations Grid">
+                📍 <span>Stations (<b id="v-sel-name">All</b>)</span>
+            </button>
+            <div class="vitals">
+                <span>clock <b id="v-clock">&mdash;</b></span>
+                <span>replay <b id="v-wall">0s</b></span>
+                <span>throughput <b id="v-thru">&mdash;</b></span>
+                <span>decision <b id="v-lat">&mdash;</b></span>
+                <span>threshold <b id="v-thr">&mdash;</b></span>
+                <span>link <b id="v-link">connecting</b></span>
+            </div>
+        </header>
+
+        <div class="bay" id="bay">
+
+            <!-- ---------- left: the glyph grid ---------- -->
+            <section id="station-panel">
+                <div class="eyebrow">Network <em id="net-count">&mdash;</em></div>
+                <p class="hint">Each glyph is a WMO station model. Ring arcs represent sensor QC state. Selecting a station expands full-width parallel traces.</p>
+                <div class="grid" id="grid"></div>
+                <div class="legend">
+                    <span><i style="background:var(--verdigris)"></i>0 trusted</span>
+                    <span><i style="background:var(--amber)"></i>1 suspect</span>
+                    <span><i style="background:var(--vermilion)"></i>2 rejected</span>
+                    <span><i style="background:var(--indigo)"></i>3 repaired</span>
+                </div>
+                <div class="eyebrow">Maintenance queue</div>
+                <div id="queue" class="empty">No sensor is projected out of tolerance.</div>
+                <div style="height:14px"></div>
+            </section>
+
+            <!-- ---------- centre: instrument faces (parallel observation + health) ---------- -->
+            <section id="center-panel">
+                <div class="face-head">
+                    <div>
+                        <h2 id="f-name">No station selected</h2>
+                        <p id="f-sub">Pick a glyph on the left, or press 1&ndash;9.</p>
+                    </div>
+                    <div class="face-actions">
+                        <span id="pin-indicator" class="pin-badge" style="display:none">
+                            📍 <span id="pin-text">Alert Pin</span>
+                            <button id="btn-clear-pin" class="btn-clear-pin" title="Clear Pin">✕</button>
+                        </span>
+                        <button id="btn-switch-station-alt" class="btn-switch-alt">⇄ Switch Station</button>
+                    </div>
+                </div>
+                <div class="traces" id="traces"></div>
+            </section>
+
+            <!-- ---------- right: the dossier ---------- -->
+            <section id="dossier-panel">
+                <div class="eyebrow">Why <em id="w-exact"></em></div>
+                <div class="why" id="why">
+                    <p class="empty" style="padding:0">Select a station to see the exact attribution behind its score.</p>
+                </div>
+            </section>
+        </div>
+
+        <!-- ---------- bottom: resizable alert ticker ---------- -->
+        <div class="ticker" id="ticker-bar">
+            <div class="ticker-resizer" id="ticker-resizer"></div>
+            <div class="ticker-header">
+                <div class="eyebrow" style="padding:0">Alert feed <em id="a-count">0</em></div>
+                <div class="ticker-slider-wrap">
+                    <label for="log-slider">Log height:</label>
+                    <input type="range" id="log-slider" min="60" max="420" value="140" class="log-slider">
+                    <button id="btn-toggle-log" class="btn-mini">⇕ Resize</button>
+                </div>
+            </div>
+            <div class="ticker-body">
+                <table>
+                    <tbody id="feed"></tbody>
+                </table>
+            </div>
+        </div>
     </div>
 
-    <div class="panel">
-      <h2>Recent anomalies</h2>
-      <table>
-        <thead><tr><th>time</th><th>station</th><th>type</th><th>sensor</th></tr></thead>
-        <tbody id="anomBody"></tbody>
-      </table>
-      <div style="color:var(--dim);font-size:12px;margin-top:6px" id="anomEmpty"></div>
-    </div>
-  </div>
+    <script src="/offline-shim.js"></script>
+    <script>
+        "use strict";
 
-  <div class="panel" style="margin-top:16px">
-    <h2>Live stream <span style="float:right;font-size:11px" id="streamCount"></span></h2>
-    <div id="stream"></div>
-  </div>
+        const CH = ["temp", "pres", "rh"];
+        const CH_LABEL = { temp: "Temperature", pres: "Pressure", rh: "Humidity" };
+        const QC_NAME = ["trusted", "suspect", "rejected", "repaired"];
+        const KEEP = 220;
 
-<script>
-const $ = (id) => document.getElementById(id);
+        const CSSV = (n) => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+        const COL = {
+            panel: CSSV("--panel"), ink: CSSV("--ink"), prussian: CSSV("--prussian"),
+            qc: [CSSV("--verdigris"), CSSV("--amber"), CSSV("--vermilion"), CSSV("--indigo")],
+            dim: CSSV("--dim"), rule: CSSV("--rule"), ground2: CSSV("--ground-2"),
+            redAlert: CSSV("--red-alert") || "#FF3B30",
+        };
+        const SEV_COL = {
+            CRITICAL: COL.qc[2], MAJOR: COL.qc[2], MINOR: CSSV("--amber"),
+            SUSPECT: CSSV("--amber"), OK: COL.qc[0],
+        };
 
-// ---- helpers ------------------------------------------------------------
-function esc(v) {
-  return String(v ?? "").replace(/[&<>"']/g, c =>
-    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
-}
-function num(v) { return v === null || v === undefined ? "—" : esc(v); }
+        const S = {
+            meta: null, order: [], sel: null, hist: {}, last: {}, units: {},
+            nAlerts: 0, lastExplain: 0, explainFor: null,
+            pinnedIso: null, pinnedSid: null, pinnedText: null,
+        };
 
-async function refresh() {
-  try {
-    const health = await fetch("/health").then(r => r.json());
-    $("statusBadge").className = "status up";
-    $("statusBadge").textContent = "backend up";
-    $("buffered").textContent = health.buffered_rows;
-    $("stationCount").textContent = health.stations.length;
-  } catch {
-    $("statusBadge").className = "status down";
-    $("statusBadge").textContent = "backend down";
-    return;
-  }
+        const $ = (id) => document.getElementById(id);
+        const fmt = (v, d) => (v === null || v === undefined || !isFinite(v)) ? "—" : Number(v).toFixed(d);
 
-  try {
-    const latest = await fetch("/readings/latest").then(r => r.json());
-    $("latestBody").innerHTML = latest.rows.map(r => `
-      <tr class="${r.is_anomaly ? "anom" : ""}">
-        <td>${esc(r.id)}</td>
-        <td class="num">${num(r.temp_c)}</td>
-        <td class="num">${num(r.pressure_hpa)}</td>
-        <td class="num">${num(r.humidity_pct)}</td>
-        <td><span class="badge ${r.is_anomaly ? "yes" : "no"}">${r.is_anomaly ? "YES" : "no"}</span></td>
-      </tr>`).join("");
-  } catch {}
+        /* =====================================================================
+           Boot: station metadata, then the stream.
+           ===================================================================== */
+        fetch("/stations").then(r => r.json()).then(meta => {
+            S.meta = meta;
+            S.units = meta.units || {};
+            S.order = Object.keys(meta.stations).sort();
+            $("v-thr").textContent = fmt(meta.threshold, 2);
+            $("net-count").textContent = S.order.length + " stations";
+            buildGrid();
+            connect();
+            setInterval(pollVitals, 2500);
+            if (S.order.length > 0) {
+                // Select first station as default
+                select(S.order[0], false);
+            }
+        }).catch(() => { $("v-link").textContent = "no server"; });
 
-  try {
-    const anom = await fetch("/anomalies?limit=50").then(r => r.json());
-    $("anomalyCount").textContent = anom.count;
-    $("anomBody").innerHTML = anom.rows.map(r => `
-      <tr class="anom">
-        <td class="num">${esc(r.timestamp)}</td>
-        <td>${esc(r.id)}</td>
-        <td>${esc(r.anomaly_type)}</td>
-        <td>${esc(r.affected_sensor)}</td>
-      </tr>`).join("");
-    $("anomEmpty").textContent = anom.count ? "" : "no anomalies in buffer yet — stream runs ~1 row/sec";
-  } catch {}
-}
+        function buildGrid() {
+            const g = $("grid");
+            g.innerHTML = "";
+            S.order.forEach((sid, i) => {
+                const st = S.meta.stations[sid];
+                const b = document.createElement("button");
+                b.className = "cell";
+                b.setAttribute("aria-pressed", "false");
+                b.dataset.sid = sid;
+                b.title = st.name + "  ·  " + st.region + "  ·  " + st.alt_m + " m";
+                const cv = document.createElement("canvas");
+                cv.width = 168; cv.height = 168;
+                const lab = document.createElement("span");
+                lab.className = "sid";
+                lab.textContent = sid.replace("AWS-", "");
+                b.append(cv, lab);
+                b.addEventListener("click", () => {
+                    select(sid, true); // Auto-collapse station grid on click
+                });
+                g.appendChild(b);
+                S.hist[sid] = { t: [], iso: [] };
+                CH.forEach(c => {
+                    S.hist[sid][c] = {
+                        raw: [], cor: [], qc: [], sig: [], tru: [],
+                        health_pct: [], drift: [], days_to_maint: []
+                    };
+                });
+            });
+        }
 
-// ---- live SSE stream -----------------------------------------------------
-let streamRows = 0;
-const streamEl = $("stream");
-const source = new EventSource("/stream");
-source.onmessage = (ev) => {
-  streamRows++;
-  $("streamCount").textContent = `${streamRows} events`;
-  const r = JSON.parse(ev.data);
-  const hit = r.is_anomaly;
-  const line = `${r.id}\t${r.timestamp}\t${num(r.temp_c)}°C\t${num(r.pressure_hpa)}hPa\t${num(r.humidity_pct)}%\t${hit ? "ANOMALY " + r.anomaly_type : "normal"}`;
-  const div = document.createElement("div");
-  div.className = hit ? "hit" : "miss";
-  div.textContent = line;
-  streamEl.prepend(div);
-  while (streamEl.children.length > 200) streamEl.removeChild(streamEl.lastChild);
-};
-source.onerror = () => { $("streamCount").textContent = "stream disconnected"; };
+        // Toggle station panel
+        function toggleStationPanel(forceState) {
+            const bay = $("bay");
+            if (forceState !== undefined) {
+                bay.classList.toggle("collapsed-left", forceState);
+            } else {
+                bay.classList.toggle("collapsed-left");
+            }
+            requestAnimationFrame(() => {
+                drawFaces();
+                setTimeout(drawFaces, 60);
+                setTimeout(drawFaces, 260);
+            });
+        }
 
-refresh();
-setInterval(refresh, 3000);
-</script>
+        $("btn-switch-station").addEventListener("click", () => toggleStationPanel());
+        $("btn-switch-station-alt").addEventListener("click", () => toggleStationPanel(false));
+
+        $("btn-clear-pin").addEventListener("click", () => {
+            S.pinnedIso = null;
+            S.pinnedSid = null;
+            $("pin-indicator").style.display = "none";
+            document.querySelectorAll("#feed tr").forEach(tr => tr.classList.remove("pinned-row"));
+            drawFaces();
+        });
+
+        document.addEventListener("keydown", (e) => {
+            if (e.key >= "1" && e.key <= "9") {
+                const sid = S.order[Number(e.key) - 1];
+                if (sid) select(sid, true);
+            }
+            if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+                const i = S.order.indexOf(S.sel);
+                const j = (i + (e.key === "ArrowDown" ? 1 : -1) + S.order.length) % S.order.length;
+                select(S.order[j], false);
+                e.preventDefault();
+            }
+        });
+
+        /* =====================================================================
+           Stream
+           ===================================================================== */
+        function connect() {
+            const es = new EventSource("/api/stream");
+            es.onopen = () => { $("v-link").textContent = "live"; };
+            es.onerror = () => { $("v-link").textContent = "reconnecting"; };
+            es.onmessage = (ev) => {
+                const m = JSON.parse(ev.data);
+                if (m.type === "end") { $("v-link").textContent = "replay complete"; return; }
+                if (m.type !== "tick") return;
+                ingest(m);
+            };
+        }
+
+        function ingest(m) {
+            $("v-clock").textContent = String(m.iso).slice(0, 16).replace("T", " ");
+            $("v-wall").textContent = fmt(m.wall, 0) + "s";
+            for (const sid in m.stations) {
+                const d = m.stations[sid];
+                const h = S.hist[sid];
+                if (!h) continue;
+                h.t.push(m.t); h.iso.push(m.iso);
+                if (h.t.length > KEEP) { h.t.shift(); h.iso.shift(); }
+                CH.forEach(c => {
+                    const b = h[c];
+                    b.raw.push(d.v ? d.v[c] : null);
+                    b.cor.push(d.corrected ? d.corrected[c] : null);
+                    b.qc.push(d.qc ? (d.qc[c] | 0) : 0);
+                    b.sig.push(d.sigma ? d.sigma[c] : null);
+                    b.tru.push(d.truth ? d.truth[c] : null);
+
+                    const sh = d.sensor_health ? d.sensor_health[c] : null;
+                    b.health_pct.push(sh ? sh.health_pct : (d.health ? d.health.health_index : 95));
+                    b.drift.push(sh ? sh.drift_rate : 0.001);
+                    b.days_to_maint.push(sh ? sh.days_to_maint : (d.health ? d.health.days_to_maintenance : 180));
+
+                    if (b.raw.length > KEEP) {
+                        b.raw.shift(); b.cor.shift(); b.qc.shift();
+                        b.sig.shift(); b.tru.shift();
+                        b.health_pct.shift(); b.drift.shift(); b.days_to_maint.shift();
+                    }
+                });
+                const was = S.last[sid];
+                S.last[sid] = d;
+                drawGlyph(sid);
+                const fresh = d.score >= (S.meta.threshold || 0.7);
+                const wasFresh = was && was.score >= (S.meta.threshold || 0.7);
+                if (fresh && !wasFresh) raise(sid, d, m.iso, m.t);
+            }
+            renderQueue();
+            if (S.sel && m.stations[S.sel]) {
+                drawFaces();
+                maybeExplain();
+            }
+        }
+
+        /* =====================================================================
+           Station Glyphs (WMO Model)
+           ===================================================================== */
+        function drawGlyph(sid) {
+            const btn = document.querySelector('.cell[data-sid="' + sid + '"]');
+            if (!btn) return;
+            const cv = btn.querySelector("canvas");
+            const g = cv.getContext("2d");
+            const W = cv.width, H = cv.height, cx = W / 2, cy = H / 2, R = 34;
+            const d = S.last[sid] || {};
+            g.clearRect(0, 0, W, H);
+            g.lineCap = "butt";
+
+            const step = (Math.PI * 2) / 3;
+            CH.forEach((c, i) => {
+                const qc = d.qc ? (d.qc[c] | 0) : 0;
+                const a0 = -Math.PI / 2 + i * step + 0.07;
+                const a1 = -Math.PI / 2 + (i + 1) * step - 0.07;
+                g.beginPath();
+                g.arc(cx, cy, R, a0, a1);
+                g.strokeStyle = COL.qc[Math.min(qc, 3)];
+                g.lineWidth = qc === 0 ? 4 : 8;
+                g.stroke();
+            });
+
+            const hi = d.health && d.health.health_index;
+            g.fillStyle = COL.panel;
+            g.font = "700 26px " + CSSV("--mono");
+            g.textAlign = "center"; g.textBaseline = "middle";
+            g.fillText(hi === undefined || hi === null ? "–" : Math.round(hi), cx, cy + 1);
+
+            g.font = "500 19px " + CSSV("--mono");
+            g.fillStyle = COL.dim;
+            const v = d.v || {};
+            g.textAlign = "right";
+            g.fillText(fmt(v.temp, 1), cx - R - 3, cy - 20);
+            g.fillText(fmt(v.rh, 0), cx - R - 3, cy + 22);
+            g.textAlign = "left";
+            g.fillText(fmt(v.pres, 0), cx + R + 3, cy - 20);
+
+            if (d.sev && d.sev !== "OK") {
+                g.fillStyle = SEV_COL[d.sev] || COL.qc[2];
+                g.fillRect(cx - 20, cy + R + 6, 40, 4);
+            }
+            btn.dataset.alert = (d.score >= (S.meta.threshold || 0.7)) ? "1" : "0";
+        }
+
+        /* =====================================================================
+           Selection & Parallel Graphs
+           ===================================================================== */
+        function select(sid, autoCollapse = false) {
+            S.sel = sid;
+            document.querySelectorAll(".cell").forEach(b =>
+                b.setAttribute("aria-pressed", String(b.dataset.sid === sid)));
+            const st = S.meta ? S.meta.stations[sid] : null;
+            if (st) {
+                $("f-name").textContent = sid + " · " + st.name;
+                $("f-sub").textContent = st.region + " · " + st.alt_m + " m · " +
+                    st.lat.toFixed(2) + "°N " + st.lon.toFixed(2) + "°E";
+                $("v-sel-name").textContent = sid;
+            }
+
+            // Clear old station pin if selecting another station
+            if (S.pinnedSid && S.pinnedSid !== sid) {
+                S.pinnedIso = null;
+                S.pinnedSid = null;
+                $("pin-indicator").style.display = "none";
+                document.querySelectorAll("#feed tr").forEach(r => r.classList.remove("pinned-row"));
+            }
+
+            if (autoCollapse) {
+                toggleStationPanel(true);
+            }
+
+            buildFaces();
+            requestAnimationFrame(() => {
+                drawFaces();
+                setTimeout(drawFaces, 40);
+                setTimeout(drawFaces, 180);
+            });
+            S.explainFor = null;
+            maybeExplain(true);
+        }
+
+        function buildFaces() {
+            const box = $("traces");
+            box.innerHTML = "";
+            CH.forEach(c => {
+                const row = document.createElement("div");
+                row.className = "trace-row";
+                row.id = "trace-row-" + c;
+
+                // 1. Observation trace (Left)
+                const dObs = document.createElement("div");
+                dObs.className = "trace trace-obs";
+                dObs.innerHTML =
+                    '<header><span>' + CH_LABEL[c] + ' <u>' + (S.units[c] || "") + '</u></span>' +
+                    '<span class="now" id="now-' + c + '">&mdash;</span></header>' +
+                    '<canvas id="cv-' + c + '"></canvas>' +
+                    '<footer id="ft-' + c + '"></footer>';
+
+                // 2. Parallel Sensor Health & Drift trace (Right)
+                const dHealth = document.createElement("div");
+                dHealth.className = "trace trace-health";
+                dHealth.innerHTML =
+                    '<header><span>' + CH_LABEL[c] + ' Sensor Health <u id="zone-' + c + '">NOMINAL</u></span>' +
+                    '<span class="now health-now" id="now-health-' + c + '">&mdash;</span></header>' +
+                    '<canvas id="cv-health-' + c + '"></canvas>' +
+                    '<footer id="ft-health-' + c + '"></footer>';
+
+                row.append(dObs, dHealth);
+                box.appendChild(row);
+            });
+        }
+
+        function drawFaces() {
+            const sid = S.sel, h = S.hist[sid], d = S.last[sid] || {};
+            if (!h) return;
+
+            CH.forEach(c => {
+                drawObsFace(c, sid, h, d);
+                drawHealthFace(c, sid, h, d);
+            });
+        }
+
+        function drawObsFace(c, sid, h, d) {
+            const cv = $("cv-" + c);
+            if (!cv) return;
+            const dpr = window.devicePixelRatio || 1;
+            const w = cv.clientWidth || (cv.parentElement ? cv.parentElement.clientWidth - 24 : 320);
+            const ht = 96;
+            if (cv.width !== Math.round(w * dpr) || cv.height !== Math.round(ht * dpr)) {
+                cv.width = Math.round(w * dpr); cv.height = Math.round(ht * dpr);
+            }
+            const g = cv.getContext("2d");
+            g.setTransform(dpr, 0, 0, dpr, 0, 0);
+            g.clearRect(0, 0, w, ht);
+            const b = h[c], n = b.raw.length;
+            if (!n) return;
+
+            let lo = Infinity, hi = -Infinity;
+            const consider = (v) => { if (v !== null && isFinite(v)) { if (v < lo) lo = v; if (v > hi) hi = v; } };
+            for (let i = 0; i < n; i++) {
+                if (b.qc[i] < 2) consider(b.raw[i]);
+                consider(b.cor[i]); consider(b.tru[i]);
+            }
+            if (!isFinite(lo)) { lo = 0; hi = 1; }
+            if (hi - lo < 1e-6) { hi = lo + 1; }
+            const pad = (hi - lo) * 0.18; lo -= pad; hi += pad;
+            const X = (i) => 34 + (w - 44) * (n === 1 ? 1 : i / (n - 1));
+            const Y = (v) => ht - 14 - (ht - 22) * (v - lo) / (hi - lo);
+
+            // Grid lines
+            g.strokeStyle = "rgba(29,78,111,.16)"; g.lineWidth = 1;
+            for (let k = 0; k <= 4; k++) {
+                const y = 8 + (ht - 22) * k / 4;
+                g.beginPath(); g.moveTo(34, y); g.lineTo(w - 10, y); g.stroke();
+            }
+            g.fillStyle = "#5d6570"; g.font = "9px " + CSSV("--mono");
+            g.textAlign = "right"; g.textBaseline = "middle";
+            g.fillText(fmt(hi, 1), 30, 8);
+            g.fillText(fmt(lo, 1), 30, ht - 14);
+
+            // Ground truth dotted reference
+            g.strokeStyle = "rgba(29,78,111,.55)"; g.setLineDash([1, 3]); g.lineWidth = 1;
+            strokeSeries(g, b.tru, X, Y, n, () => true);
+            g.setLineDash([]);
+
+            // Uncertainty band
+            g.fillStyle = "rgba(91,75,138,.22)";
+            g.beginPath(); let open = false;
+            for (let i = 0; i < n; i++) {
+                const v = b.cor[i], s = b.sig[i];
+                if (v === null || !isFinite(v) || !s || !isFinite(s) || s <= 0) continue;
+                if (!open) { g.moveTo(X(i), Y(v + s)); open = true; }
+                else g.lineTo(X(i), Y(v + s));
+            }
+            for (let i = n - 1; i >= 0; i--) {
+                const v = b.cor[i], s = b.sig[i];
+                if (v === null || !isFinite(v) || !s || !isFinite(s) || s <= 0) continue;
+                g.lineTo(X(i), Y(v - s));
+            }
+            if (open) { g.closePath(); g.fill(); }
+
+            // Repaired line
+            g.strokeStyle = COL.qc[3]; g.lineWidth = 1.6; g.setLineDash([4, 2]);
+            strokeSeries(g, b.cor, X, Y, n, (i) => b.qc[i] >= 2);
+            g.setLineDash([]);
+
+            // Raw observation
+            g.strokeStyle = COL.ink; g.lineWidth = 1.5;
+            strokeSeries(g, b.raw, X, Y, n, (i) => b.qc[i] < 2);
+
+            // RED PINPOINT MARKER
+            if (S.pinnedIso) {
+                let pIdx = -1;
+                for (let i = n - 1; i >= 0; i--) {
+                    if (h.iso[i] === S.pinnedIso) { pIdx = i; break; }
+                }
+                if (pIdx !== -1) {
+                    const px = X(pIdx);
+                    const py = Y(b.raw[pIdx] !== null ? b.raw[pIdx] : b.cor[pIdx]);
+
+                    g.strokeStyle = "rgba(255, 59, 48, 0.75)";
+                    g.lineWidth = 1.5;
+                    g.setLineDash([3, 3]);
+                    g.beginPath();
+                    g.moveTo(px, 4);
+                    g.lineTo(px, ht - 8);
+                    g.stroke();
+                    g.setLineDash([]);
+
+                    g.beginPath();
+                    g.arc(px, py, 7, 0, Math.PI * 2);
+                    g.fillStyle = "rgba(255, 59, 48, 0.25)";
+                    g.fill();
+
+                    g.beginPath();
+                    g.arc(px, py, 4, 0, Math.PI * 2);
+                    g.fillStyle = "#FF3B30";
+                    g.fill();
+                    g.strokeStyle = "#FFFFFF";
+                    g.lineWidth = 1.5;
+                    g.stroke();
+                }
+            }
+
+            // Text readouts
+            const qc = (d.qc && d.qc[c] | 0) || 0;
+            const pub = d.corrected ? d.corrected[c] : null;
+            const sg = d.sigma ? d.sigma[c] : null;
+            const dp = c === "pres" ? 2 : 1;
+            $("now-" + c).innerHTML =
+                fmt(pub === null ? (d.v ? d.v[c] : null) : pub, dp) +
+                (sg ? ' <u>± ' + fmt(sg, 2) + '</u>' : "") +
+                ' <span class="qcpill" style="background:' + COL.qc[qc] + '">' +
+                qc + " " + QC_NAME[qc] + "</span>";
+
+            const meth = d.method ? d.method[c] : "";
+            const foot = $("ft-" + c);
+            if (qc >= 2 && meth && meth !== "observed") {
+                foot.textContent = "Reported " + fmt(d.v ? d.v[c] : null, dp) + " " + (S.units[c] || "") +
+                    ", rejected and reconstructed via " + meth + ".";
+            } else if (qc === 1) {
+                foot.textContent = "Flagged suspect — monitored without replacement.";
+            } else {
+                foot.textContent = "Telemetry nominal. Observation within physical limits.";
+            }
+        }
+
+        function drawHealthFace(c, sid, h, d) {
+            const cv = $("cv-health-" + c);
+            if (!cv) return;
+            const dpr = window.devicePixelRatio || 1;
+            const w = cv.clientWidth || (cv.parentElement ? cv.parentElement.clientWidth - 24 : 320);
+            const ht = 96;
+            if (cv.width !== Math.round(w * dpr) || cv.height !== Math.round(ht * dpr)) {
+                cv.width = Math.round(w * dpr); cv.height = Math.round(ht * dpr);
+            }
+            const g = cv.getContext("2d");
+            g.setTransform(dpr, 0, 0, dpr, 0, 0);
+            g.clearRect(0, 0, w, ht);
+            const b = h[c], n = b.health_pct.length;
+            if (!n) return;
+
+            const lo = 0, hi = 100;
+            const X = (i) => 34 + (w - 44) * (n === 1 ? 1 : i / (n - 1));
+            const Y = (v) => ht - 14 - (ht - 22) * (v - lo) / (hi - lo);
+
+            // Guidelines at 75% (Nominal) and 40% (Critical)
+            g.strokeStyle = "rgba(46,125,107, 0.25)"; g.lineWidth = 1;
+            g.beginPath(); g.moveTo(34, Y(75)); g.lineTo(w - 10, Y(75)); g.stroke();
+            g.strokeStyle = "rgba(178,64,31, 0.25)";
+            g.beginPath(); g.moveTo(34, Y(40)); g.lineTo(w - 10, Y(40)); g.stroke();
+
+            g.fillStyle = "#5d6570"; g.font = "9px " + CSSV("--mono");
+            g.textAlign = "right"; g.textBaseline = "middle";
+            g.fillText("100%", 30, 8);
+            g.fillText("40%", 30, Y(40));
+            g.fillText("0%", 30, ht - 14);
+
+            const curHealth = b.health_pct[n - 1] || 95;
+            const curveColor = curHealth >= 75 ? COL.qc[0] : (curHealth >= 40 ? CSSV("--amber") : COL.qc[2]);
+
+            // Fill area under health curve
+            g.fillStyle = curHealth >= 75 ? "rgba(46,125,107,0.12)" : "rgba(178,64,31,0.14)";
+            g.beginPath();
+            g.moveTo(X(0), ht - 14);
+            for (let i = 0; i < n; i++) {
+                g.lineTo(X(i), Y(b.health_pct[i]));
+            }
+            g.lineTo(X(n - 1), ht - 14);
+            g.closePath();
+            g.fill();
+
+            // Main health curve line
+            g.strokeStyle = curveColor;
+            g.lineWidth = 2.0;
+            g.beginPath();
+            for (let i = 0; i < n; i++) {
+                const x = X(i), y = Y(b.health_pct[i]);
+                if (i === 0) g.moveTo(x, y); else g.lineTo(x, y);
+            }
+            g.stroke();
+
+            // RED PINPOINT MARKER ON HEALTH CURVE
+            if (S.pinnedIso) {
+                let pIdx = -1;
+                for (let i = n - 1; i >= 0; i--) {
+                    if (h.iso[i] === S.pinnedIso) { pIdx = i; break; }
+                }
+                if (pIdx !== -1) {
+                    const px = X(pIdx);
+                    const py = Y(b.health_pct[pIdx]);
+
+                    g.strokeStyle = "rgba(255, 59, 48, 0.75)";
+                    g.lineWidth = 1.5;
+                    g.setLineDash([3, 3]);
+                    g.beginPath();
+                    g.moveTo(px, 4);
+                    g.lineTo(px, ht - 8);
+                    g.stroke();
+                    g.setLineDash([]);
+
+                    g.beginPath();
+                    g.arc(px, py, 7, 0, Math.PI * 2);
+                    g.fillStyle = "rgba(255, 59, 48, 0.25)";
+                    g.fill();
+
+                    g.beginPath();
+                    g.arc(px, py, 4, 0, Math.PI * 2);
+                    g.fillStyle = "#FF3B30";
+                    g.fill();
+                    g.strokeStyle = "#FFFFFF";
+                    g.lineWidth = 1.5;
+                    g.stroke();
+                }
+            }
+
+            const sh = d.sensor_health ? d.sensor_health[c] : null;
+            const hp = sh ? sh.health_pct : curHealth;
+            const days = sh ? sh.days_to_maint : 140;
+            const drift = sh ? sh.drift_rate : 0.001;
+            const zone = sh ? sh.zone : (hp >= 75 ? "GREAT CONDITION" : (hp >= 40 ? "MAINTENANCE RECOMMENDED" : "CRITICAL CONDITION"));
+
+            const elNow = $("now-health-" + c);
+            elNow.innerHTML = fmt(hp, 1) + '% <u style="font-size:11px;color:#5d6570;">' + days + 'd maint</u>';
+            elNow.className = "now health-now" + (hp < 40 ? " crit" : (hp < 75 ? " warn" : ""));
+
+            const elZone = $("zone-" + c);
+            if (elZone) elZone.textContent = zone.toUpperCase();
+
+            const foot = $("ft-health-" + c);
+            foot.textContent = "Mann-Kendall: " + (sh ? sh.trend : "stable") +
+                " · Drift: " + fmt(drift, 4) + "/day · Projected " + days + " days remaining.";
+        }
+
+        function strokeSeries(g, arr, X, Y, n, ok) {
+            g.beginPath();
+            let pen = false;
+            for (let i = 0; i < n; i++) {
+                const v = arr[i];
+                if (v === null || v === undefined || !isFinite(v) || !ok(i)) { pen = false; continue; }
+                if (!pen) { g.moveTo(X(i), Y(v)); pen = true; } else g.lineTo(X(i), Y(v));
+            }
+            g.stroke();
+        }
+
+        /* =====================================================================
+           Why Dossier (Exact Shapley Attribution)
+           ===================================================================== */
+        function maybeExplain(force) {
+            const now = Date.now();
+            if (!S.sel) return;
+            const d = S.last[S.sel];
+            if (!d) return;
+            const interesting = d.score >= (S.meta.threshold || 0.7);
+            if (!force && (now - S.lastExplain < 1600 || !interesting)) return;
+            S.lastExplain = now;
+            fetch("/api/explain?station=" + encodeURIComponent(S.sel))
+                .then(r => r.ok ? r.json() : null)
+                .then(rep => { if (rep) renderWhy(rep); })
+                .catch(() => { });
+        }
+
+        function renderWhy(rep) {
+            $("w-exact").textContent = rep.exact ? "exact · " + rep.n_coalitions + " coalitions" : "";
+            const fams = (rep.families || []).slice(0, 8);
+            const mx = Math.max(0.02, ...fams.map(f => Math.abs(f.phi)));
+            let html =
+                '<p class="cause" style="color:' + (SEV_COL[rep.severity] || COL.panel) + '">' +
+                rep.cause + '</p>' +
+                '<p class="conf">' + rep.severity + " · confidence " +
+                fmt(rep.confidence, 2) + " · score " + fmt(rep.score, 3) + "</p>";
+            if (rep.text) html += '<p class="prose">' + esc(rep.text) + "</p>";
+
+            html += '<div class="eyebrow" style="padding:0 0 8px">Evidence attribution</div>';
+            fams.forEach(f => {
+                const frac = Math.abs(f.phi) / mx * 50;
+                const pos = f.phi >= 0;
+                html += '<div class="fam" title="' + esc(f.meaning || "") + '">' +
+                    "<span>" + esc(f.family) + "</span>" +
+                    '<div class="bar"><i style="' +
+                    (pos ? "left:50%;" : "right:50%;") + "width:" + frac.toFixed(1) + "%;" +
+                    "background:" + (pos ? COL.qc[2] : COL.prussian) + '"></i></div>' +
+                    "<b style='color:" + (pos ? COL.qc[2] : COL.dim) + "'>" +
+                    (pos ? "+" : "") + fmt(f.phi, 3) + "</b></div>";
+            });
+
+            if (rep.vs_genuine_weather) {
+                html += '<div class="contrast"><div class="eyebrow" style="padding:14px 0 4px">' +
+                    "Ruled out: genuine weather</div>" +
+                    "<div>Log-odds margin <b>" + fmt(rep.vs_genuine_weather.margin_logodds, 2) +
+                    "</b> in favour of a sensor fault over a real atmospheric event.</div><table>";
+                (rep.vs_genuine_weather.features || []).slice(0, 6).forEach(r => {
+                    const name = r.feature || r.name || r[0];
+                    const val = r.contribution !== undefined ? r.contribution : r[1];
+                    html += "<tr><td>" + esc(String(name)) + "</td><td>" +
+                        fmt(Number(val), 2) + "</td></tr>";
+                });
+                html += "</table></div>";
+            }
+
+            const cor = rep.corrections || {};
+            const rows = CH.filter(c => cor[c] && cor[c].qc >= 1);
+            if (rows.length) {
+                html += '<div class="eyebrow" style="padding:14px 0 4px">Published values</div>' +
+                    '<table style="width:100%;border-collapse:collapse;font-size:10.5px">';
+                rows.forEach(c => {
+                    const x = cor[c];
+                    html += "<tr><td style='color:var(--dim);padding:2px 0'>" + c + "</td>" +
+                        "<td style='padding:2px 0'>" + fmt(x.value, 2) +
+                        (x.sigma && isFinite(x.sigma) ? " ± " + fmt(x.sigma, 2) : "") +
+                        "</td><td style='text-align:right;color:" + COL.qc[x.qc | 0] + "'>qc " +
+                        (x.qc | 0) + "</td></tr>" +
+                        "<tr><td colspan='3' style='color:#7f8b99;font-family:var(--sans);" +
+                        "padding:0 0 4px'>" + esc(x.reason || x.method || "") + "</td></tr>";
+                });
+                html += "</table>";
+            }
+            $("why").innerHTML = html;
+        }
+
+        function esc(s) {
+            return String(s).replace(/[&<>"]/g, ch =>
+                ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[ch]));
+        }
+
+        /* =====================================================================
+           Alert Feed & Pinpointer Connection
+           ===================================================================== */
+        function raise(sid, d, iso, t) {
+            S.nAlerts += 1;
+            $("a-count").textContent = S.nAlerts;
+            const btn = document.querySelector('.cell[data-sid="' + sid + '"]');
+            if (btn) { btn.classList.remove("sweep"); void btn.offsetWidth; btn.classList.add("sweep"); }
+            const tr = document.createElement("tr");
+            tr.className = "fresh";
+            tr.dataset.sid = sid;
+            tr.dataset.iso = iso;
+            tr.dataset.t = t || "";
+            tr.title = "Click to jump and pinpoint this alert on the graphs";
+
+            tr.innerHTML =
+                "<td>" + String(iso).slice(11, 16) + "</td>" +
+                "<td><b style='color:var(--panel)'>" + sid + "</b></td>" +
+                "<td class='sev' style='color:" + (SEV_COL[d.sev] || COL.qc[2]) + "'>" +
+                d.sev + "</td>" +
+                "<td>" + d.cause + (d.ch ? " · " + d.ch : "") + "</td>" +
+                "<td>conf " + fmt(d.conf, 2) + "</td>" +
+                "<td>" + d.nb + " nbrs</td>" +
+                "<td class='msg'>" + esc(d.expl || "") + "</td>";
+
+            tr.addEventListener("click", () => {
+                document.querySelectorAll("#feed tr").forEach(r => r.classList.remove("pinned-row"));
+                tr.classList.add("pinned-row");
+                S.pinnedIso = iso;
+                S.pinnedSid = sid;
+                $("pin-text").textContent = sid + " @ " + String(iso).slice(11, 16);
+                $("pin-indicator").style.display = "inline-flex";
+
+                if (S.sel !== sid) {
+                    select(sid, false);
+                } else {
+                    drawFaces();
+                }
+            });
+
+            const feed = $("feed");
+            feed.insertBefore(tr, feed.firstChild);
+            while (feed.children.length > 80) feed.removeChild(feed.lastChild);
+        }
+
+        function renderQueue() {
+            const items = [];
+            for (const sid in S.last) {
+                const h = S.last[sid].health;
+                if (h && h.days_to_maintenance !== null && h.days_to_maintenance !== undefined) {
+                    items.push([h.days_to_maintenance, sid, h.worst_channel, h.health_index, h.status]);
+                }
+            }
+            const box = $("queue");
+            if (!items.length) {
+                box.className = "empty";
+                box.textContent = "No sensor is projected out of tolerance.";
+                return;
+            }
+            items.sort((a, b) => a[0] - b[0]);
+            box.className = "";
+            box.innerHTML = '<table style="width:100%;border-collapse:collapse;' +
+                'font-size:11px;padding:0 16px">' + items.slice(0, 6).map(r =>
+                    '<tr><td style="padding:2px 16px;color:var(--panel)">' + r[1] + "</td>" +
+                    '<td style="color:var(--dim)">' + r[2] + "</td>" +
+                    '<td style="text-align:right;padding-right:16px;color:var(--amber)">' +
+                    fmt(r[0], 0) + " d</td></tr>").join("") + "</table>";
+        }
+
+        function pollVitals() {
+            fetch("/api/state").then(r => r.json()).then(s => {
+                if (s.throughput) $("v-thru").textContent = Math.round(s.throughput).toLocaleString() + "/s";
+                if (s.latency_ms) $("v-lat").textContent = fmt(s.latency_ms, 2) + " ms";
+            }).catch(() => { });
+        }
+
+        /* =====================================================================
+           Resizable Ticker & Height Slider
+           ===================================================================== */
+        const tickerBar = $("ticker-bar");
+        const logSlider = $("log-slider");
+        const btnToggleLog = $("btn-toggle-log");
+        const resizer = $("ticker-resizer");
+
+        function setTickerHeight(h) {
+            h = Math.max(54, Math.min(480, h));
+            tickerBar.style.height = h + "px";
+            logSlider.value = h;
+        }
+
+        logSlider.addEventListener("input", (e) => {
+            setTickerHeight(Number(e.target.value));
+        });
+
+        btnToggleLog.addEventListener("click", () => {
+            const curH = tickerBar.offsetHeight;
+            if (curH > 160) {
+                setTickerHeight(60);
+            } else {
+                setTickerHeight(280);
+            }
+        });
+
+        let isDragging = false;
+        let startY, startH;
+
+        resizer.addEventListener("mousedown", (e) => {
+            isDragging = true;
+            startY = e.clientY;
+            startH = tickerBar.offsetHeight;
+            resizer.classList.add("dragging");
+            document.body.style.userSelect = "none";
+            e.preventDefault();
+        });
+
+        document.addEventListener("mousemove", (e) => {
+            if (!isDragging) return;
+            const deltaY = startY - e.clientY;
+            setTickerHeight(startH + deltaY);
+        });
+
+        document.addEventListener("mouseup", () => {
+            if (isDragging) {
+                isDragging = false;
+                resizer.classList.remove("dragging");
+                document.body.style.userSelect = "";
+            }
+        });
+
+        if (window.ResizeObserver) {
+            const ro = new ResizeObserver(() => {
+                if (S.sel) drawFaces();
+            });
+            const cp = $("center-panel");
+            if (cp) ro.observe(cp);
+        }
+
+        window.addEventListener("resize", () => { if (S.sel) drawFaces(); });
+    </script>
 </body>
+
 </html>

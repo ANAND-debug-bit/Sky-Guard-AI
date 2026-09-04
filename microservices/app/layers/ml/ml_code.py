@@ -251,7 +251,7 @@ def maintenance_report(hourly_df,sensors):
 df = pd.read_parquet("data/raw/aws_clean_baseline.parquet")
 sensors=['temp_c','pressure_hpa','humidity_pct']
 health_data=maintenance_report(df,sensors)
-# print(health_data)
+
 #------------the data is really interesting(its run on real data, see present condition of sensors , we can use that in our pitch showing flaws in present infra)
 
 
@@ -293,3 +293,4 @@ ml_alerts = isolation_forest_shap(df_eval, isolation_forest, explainer, features
 ml_metrics = evaluate_ml_layer(ml_alerts, true_label_col='is_anomaly') # Change 'is_anomaly' if named differently
 # print("\n--- ML Layer 2 Performance Metrics ---")
 # print(ml_metrics)
+print(health_data)  

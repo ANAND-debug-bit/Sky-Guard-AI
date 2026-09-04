@@ -803,7 +803,7 @@
         /* =====================================================================
            Boot: station metadata, then the stream.
            ===================================================================== */
-        fetch("/api/stations").then(r => r.json()).then(meta => {
+        fetch("/stations").then(r => r.json()).then(meta => {
             S.meta = meta;
             S.units = meta.units || {};
             S.order = Object.keys(meta.stations).sort();
