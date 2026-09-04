@@ -20,13 +20,15 @@ df['pressure_jump'] = df.groupby('station_id')['pressure_hpa'].diff().fillna(0)
 df['hour'] = df['timestamp'].dt.hour
 
 features = ['temp_c', 'pressure_hpa', 'humidity_pct', 'hour', 'temp_jump', 'pressure_jump']
+def train_model(df, features):
+    isolation_forest = IsolationForest(n_estimators=100, contamination="auto", random_state=42)  # changed contamination to auto from 1%
+    isolation_forest.fit(df[features])
+    explainer = shap.TreeExplainer(isolation_forest)
+    return isolation_forest, explainer
 #---------------------------------------------------
 isolation_forest = IsolationForest(n_estimators=100, contamination="auto", random_state=42)#changed contamination to auto from 1% 
 isolation_forest.fit(df[features])
-
 explainer=shap.TreeExplainer(isolation_forest)
-
-
 #--------------------------------------model-------------------------------------------
 def isolation_forest_shap(batch_df,model,explainer,features):
     result_df=pd.DataFrame()
@@ -126,7 +128,7 @@ def gap_detection(batch_df, sensor_columns):
 
     return result_df
 
-#------------------------testing-------------------------------------------------------------------
+#--------------------------------testing-------------------------------------------------------------------
 # sensor_columns=['temp_c', 'pressure_hpa', 'humidity_pct']
 # gap_result=gap_detection(test_batch,sensor_columns)
 # print(gap_result[gap_result['predicted_anomaly']==1].head())
@@ -289,5 +291,5 @@ df_eval['hour'] = df_eval['timestamp'].dt.hour
 
 ml_alerts = isolation_forest_shap(df_eval, isolation_forest, explainer, features)
 ml_metrics = evaluate_ml_layer(ml_alerts, true_label_col='is_anomaly') # Change 'is_anomaly' if named differently
-print("\n--- ML Layer 2 Performance Metrics ---")
-print(ml_metrics)
+# print("\n--- ML Layer 2 Performance Metrics ---")
+# print(ml_metrics)

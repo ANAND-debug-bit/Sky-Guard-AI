@@ -63,7 +63,7 @@ async def sensor_stream(rows):
         sid = row.pop("station_id")
         yield json.dumps({"id": sid, **row}) + "\n"
         i = (i + 1) % n
-        await asyncio.sleep(1)
+        await asyncio.sleep(0.1)#this tells time gap btw eachreading,. lowr this for faster readings
 
 
 @app.get("/v1/sensor")
