@@ -18,6 +18,14 @@ Method (reference: microservices/app/layers/physics/spatial.py):
   - Z >= Z_THRESHOLD => neighbours disagree (Met Norway TITAN default 3.1).
   - Never flags on its own: predicted_anomaly is always False; agreement
     lives in checks.spatial for L6.
+  - MIN_NEIGHBORS_REQUIRED is enforced where the comparison happens, not
+    only where neighbours are selected: a robust Z against one neighbour
+    is meaningless (median == that neighbour, MAD == 0 -> 1e-6), so it
+    would report an enormous z and "disagree" for any tiny difference.
+  - Neighbour distance is reported so L6 can discount weak comparisons.
+    The sparse-network fallback can reach past RADIUS_KM — SXR001's
+    second-nearest station is ~650km away — and a z built from 650km
+    neighbours must not look as trustworthy as one built from 11km.
 
 Input/output contract (see AGENTS.md):
   input : readings = list of reading dicts for ALL stations at ONE
@@ -75,13 +83,18 @@ def _elevation_adjust_temp(t_celsius: float, h_m: float) -> float:
     """Lapse-rate adjust temperature to a common reference elevation."""
     return t_celsius + LAPSE_RATE_C_PER_M * (h_m - REFERENCE_ELEVATION_M)
 
-
 def _find_neighbors(own_id: str, own_meta: dict, all_meta: dict) -> list:
     """
-    Neighbours for comparison. Prefers stations within RADIUS_KM; if fewer
-    than MIN_NEIGHBORS_REQUIRED exist there, falls back to the nearest
-    stations overall (reference layer behaviour). Returns [] only when even
-    the fallback fails (genuinely isolated station).
+    Neighbours for comparison, as (station_id, distance_km) pairs sorted
+    nearest-first. Prefers stations within RADIUS_KM; if fewer than
+    MIN_NEIGHBORS_REQUIRED exist there, falls back to the nearest stations
+    overall (reference layer behaviour). Returns [] only when even the
+    fallback fails (genuinely isolated station).
+
+    Distances come back with the ids so the caller can tell L6 how far the
+    comparison actually reached: a fallback neighbour can sit well outside
+    RADIUS_KM (SXR001 -> DEL002 is ~651km) and the payload must say so
+    instead of presenting it as an ordinary in-radius comparison.
     """
     others = [s for s in all_meta if s != own_id]
     dists = []
@@ -95,18 +108,18 @@ def _find_neighbors(own_id: str, own_meta: dict, all_meta: dict) -> list:
         )
     dists.sort(key=lambda x: x[1])
 
-    within = [sid for sid, d in dists if d <= RADIUS_KM]
+    within = [(sid, d) for sid, d in dists if d <= RADIUS_KM]
     if len(within) >= MIN_NEIGHBORS_REQUIRED:
         # Prefer up to MIN_NEIGHBORS_PREFERRED nearest when available (v1).
+        # `within` is already a nearest-first prefix of `dists`, so slicing
+        # it is the same set the old id-intersection produced.
         if len(within) >= MIN_NEIGHBORS_PREFERRED:
-            preferred = {sid for sid, _ in dists[:MIN_NEIGHBORS_PREFERRED]}
-            return [sid for sid in within if sid in preferred]
+            return within[:MIN_NEIGHBORS_PREFERRED]
         return within
 
     # Fallback: nearest stations overall (demo network is sparse).
-    fallback = [sid for sid, _ in dists[:MIN_NEIGHBORS_REQUIRED]]
+    fallback = dists[:MIN_NEIGHBORS_REQUIRED]
     return fallback if len(fallback) >= MIN_NEIGHBORS_REQUIRED else []
-
 
 def evaluate_spatial(readings, stations) -> list:
     """
@@ -158,21 +171,37 @@ def evaluate_spatial(readings, stations) -> list:
             payloads.append(payload)
             continue
 
-        neighbors = _find_neighbors(own_id, own_meta, stations)
+        neighbor_dists = _find_neighbors(own_id, own_meta, stations)
         # Keep only neighbours that actually reported at this timestamp.
-        neighbors = [nb for nb in neighbors if nb in row_by_station]
-        if not neighbors:
-            # Isolated station (e.g. SHI001/SXR001): assume agree, surface honestly.
+        neighbor_dists = [
+            (nb, d) for nb, d in neighbor_dists if nb in row_by_station
+        ]
+        neighbors = [nb for nb, _ in neighbor_dists]
+
+        # Enforce the declared minimum. Reaching here with 1 neighbour would
+        # give median == that neighbour and MAD == 0, so robust_zscore falls
+        # back to 1e-6 and reports z in the tens of thousands for a 0.1C
+        # difference. Not evaluable is the honest answer, and it is NOT the
+        # same as "neighbours agree" — L6 must treat it as no information.
+        if len(neighbors) < MIN_NEIGHBORS_REQUIRED:
             payload["checks"]["spatial"] = {
                 "evaluable": False,
-                "neighbor_count": 0,
+                "neighbor_count": len(neighbors),
                 "reason": "insufficient nearby stations",
             }
             payload["reason"] = (
-                "insufficient nearby stations — neighbours assumed to agree"
+                f"insufficient nearby stations ({len(neighbors)} reporting, "
+                f"{MIN_NEIGHBORS_REQUIRED} required) — cannot evaluate"
             )
             payloads.append(payload)
             continue
+
+        # How far the comparison reached. `fallback_used` marks the sparse
+        # case where the nearest-N fallback pulled in a station beyond
+        # RADIUS_KM (e.g. SXR001's only in-radius neighbour is SHI001 at
+        # ~399km, so DEL002 at ~651km gets used to make up the minimum).
+        max_neighbor_distance_km = max(d for _, d in neighbor_dists)
+        fallback_used = any(d > RADIUS_KM for _, d in neighbor_dists)
 
         # Temperature: lapse-adjusted, compared across neighbours.
         own_temp = _elevation_adjust_temp(
@@ -188,13 +217,19 @@ def evaluate_spatial(readings, stations) -> list:
                     float(nb_row["temp_c"]), stations[nb]["elevation_m"]
                 )
             )
-        if len(nb_temps) < 1:
+
+        # Same minimum applies per sensor: neighbours can be present in the
+        # snapshot but carry NaN for this field.
+        if len(nb_temps) < MIN_NEIGHBORS_REQUIRED:
             payload["checks"]["spatial"] = {
                 "evaluable": False,
-                "neighbor_count": 0,
+                "neighbor_count": len(nb_temps),
                 "reason": "neighbours missing sensor values",
             }
-            payload["reason"] = "neighbours missing sensor values — cannot evaluate"
+            payload["reason"] = (
+                f"only {len(nb_temps)} neighbour(s) reported temperature, "
+                f"{MIN_NEIGHBORS_REQUIRED} required — cannot evaluate"
+            )
             payloads.append(payload)
             continue
         temp_z = float(robust_zscore(own_temp, nb_temps))
@@ -216,13 +251,16 @@ def evaluate_spatial(readings, stations) -> list:
                     stations[nb]["elevation_m"],
                 )
             )
-        if len(nb_p_msl) < 1:
+        if len(nb_p_msl) < MIN_NEIGHBORS_REQUIRED:
             payload["checks"]["spatial"] = {
                 "evaluable": False,
-                "neighbor_count": 0,
+                "neighbor_count": len(nb_p_msl),
                 "reason": "neighbours missing pressure values",
             }
-            payload["reason"] = "neighbours missing pressure values — cannot evaluate"
+            payload["reason"] = (
+                f"only {len(nb_p_msl)} neighbour(s) reported pressure, "
+                f"{MIN_NEIGHBORS_REQUIRED} required — cannot evaluate"
+            )
             payloads.append(payload)
             continue
         pressure_z = float(robust_zscore(own_p_msl, nb_p_msl))
@@ -230,16 +268,27 @@ def evaluate_spatial(readings, stations) -> list:
         payload["checks"]["spatial"] = {
             "evaluable": True,
             "neighbor_count": len(neighbors),
+            "max_neighbor_distance_km": round(max_neighbor_distance_km, 1),
+            "fallback_used": fallback_used,
             "temp_z": round(temp_z, 3),
             "pressure_z": round(pressure_z, 3),
             "temp_agree": abs(temp_z) < Z_THRESHOLD,
             "pressure_agree": abs(pressure_z) < Z_THRESHOLD,
         }
+        far_note = (
+            f" [weak: nearest-N fallback reached {max_neighbor_distance_km:.0f}km, "
+            f"beyond the {RADIUS_KM:.0f}km radius]"
+            if fallback_used
+            else ""
+        )
         payload["reason"] = (
-            f"{len(neighbors)} neighbours: temp_z={temp_z:.2f} "
+            f"{len(neighbors)} neighbours within "
+            f"{max_neighbor_distance_km:.0f}km: "
+            f"temp_z={temp_z:.2f} "
             f"({'agree' if abs(temp_z) < Z_THRESHOLD else 'disagree'}), "
             f"pressure_z={pressure_z:.2f} "
             f"({'agree' if abs(pressure_z) < Z_THRESHOLD else 'disagree'})"
+            f"{far_note}"
         )
         payloads.append(payload)
 
