@@ -60,6 +60,7 @@ project_root/
 │   └── requirements.txt
 ├── frontend/
 │   └── index.html
+│   └── dashboard.html   
 ├── sample2/
 ├── src/__pycache__/
 │   └── stations.cpython-313.pyc
